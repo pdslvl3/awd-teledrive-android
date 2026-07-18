@@ -56,7 +56,10 @@ import kotlin.time.Duration.Companion.seconds
 import androidx.compose.ui.tooling.preview.Preview
 import com.awd.teledrive.ui.theme.TeledriveTheme
 
-@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
+// Mengimpor model data progress dari kamar data repository
+import com.awd.teledrive.data.repository.UploadProgressItem
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     onNavigateToTransfers: () -> Unit,
@@ -76,6 +79,10 @@ fun HomeScreen(
     val isGridView by viewModel.isGridView.collectAsState()
     val connectivityStatus by viewModel.connectivityStatus.collectAsState()
 
+    // --- MENGHUBUNGKAN PIPA DATA BARU ---
+    val duplicateToConfirm by viewModel.duplicateToConfirm.collectAsState()
+    val currentUploads by viewModel.currentUploads.collectAsState()
+
     HomeContent(
         items = items,
         totalStorageUsed = totalStorageUsed,
@@ -88,6 +95,10 @@ fun HomeScreen(
         currentFolderName = currentFolderName,
         isGridView = isGridView,
         connectivityStatus = connectivityStatus,
+        duplicateToConfirm = duplicateToConfirm,
+        currentUploads = currentUploads,
+        onConfirmSkip = viewModel::confirmSkip,
+        onConfirmOverwrite = viewModel::confirmOverwrite,
         onNavigateToTransfers = onNavigateToTransfers,
         onNavigateToSettings = onNavigateToSettings,
         onNavigateToPreview = onNavigateToPreview,
@@ -124,6 +135,10 @@ fun HomeContent(
     currentFolderName: String,
     isGridView: Boolean,
     connectivityStatus: ConnectivityObserver.Status,
+    duplicateToConfirm: DuplicateUploadTask?,
+    currentUploads: List<UploadProgressItem>,
+    onConfirmSkip: () -> Unit,
+    onConfirmOverwrite: () -> Unit,
     onNavigateToTransfers: () -> Unit,
     onNavigateToSettings: () -> Unit,
     onNavigateToPreview: (DriveItem.File) -> Unit,
@@ -219,6 +234,24 @@ fun HomeContent(
                 }
             }
         }
+    }
+
+    // --- VISUAL FITUR 1: DIALOG POP-UP KONFIRMASI BERKAS KEMBAR ---
+    if (duplicateToConfirm != null) {
+        AlertDialog(
+            onDismissRequest = { onConfirmSkip() },
+            title = { Text("Berkas Sudah Ada") },
+            text = { Text("Berkas dengan nama '${duplicateToConfirm.fileName}' terdeteksi kembar di folder ini. Apa tindakan Anda?") },
+            confirmButton = {
+                Button(
+                    onClick = { onConfirmOverwrite() },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) { Text("Timpa (Overwrite)") }
+            },
+            dismissButton = {
+                TextButton(onClick = { onConfirmSkip() }) { Text("Lewati (Skip)") }
+            }
+        )
     }
 
     if (showDeleteConfirm != null) {
@@ -548,7 +581,6 @@ fun HomeContent(
                     if (!isSearchActive) {
                         Spacer(modifier = Modifier.height(12.dp))
                         
-                        // Category Filter Row
                         androidx.compose.foundation.lazy.LazyRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             contentPadding = PaddingValues(horizontal = 4.dp),
@@ -606,7 +638,7 @@ fun HomeContent(
                                     expanded = showSortMenu,
                                     onDismissRequest = { showSortMenu = false }
                                 ) {
-                                DropdownMenuItem(
+                                    DropdownMenuItem(
                                         text = { Text(stringResource(R.string.sort_name)) },
                                         onClick = { onSetSortOrder(SortOrder.NAME); showSortMenu = false },
                                         leadingIcon = { if (sortOrder == SortOrder.NAME) Icon(Icons.Default.Check, null) }
@@ -670,6 +702,82 @@ fun HomeContent(
                                 Icon(Icons.Default.CloudOff, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(8.dp))
                                 Text(stringResource(R.string.offline_msg), style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                    }
+
+                    // --- VISUAL FITUR 2: PANEL DAFTAR PROGRESS PROSES UNGHAH REAL-TIME ---
+                    if (currentUploads.isNotEmpty()) {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.35f)
+                            ),
+                            shape = RoundedCornerShape(16.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.FileUpload, 
+                                        contentDescription = null, 
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        text = "Antrean Unggah (${currentUploads.size} Berkas)",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                }
+                                Spacer(Modifier.height(8.dp))
+                                // LazyColumn internal untuk menggulir nama-nama berkas yang sedang berjalan
+                                LazyColumn(
+                                    modifier = Modifier.heightIn(max = 130.dp)
+                                ) {
+                                    items(currentUploads) { upload ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(vertical = 4.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = upload.fileName,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            Spacer(Modifier.width(12.dp))
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = if (upload.status == "Mengunggah") {
+                                                    MaterialTheme.colorScheme.primaryContainer
+                                                } else {
+                                                    MaterialTheme.colorScheme.surfaceVariant
+                                                }
+                                            ) {
+                                                Text(
+                                                    text = upload.status,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                                    color = if (upload.status == "Mengunggah") {
+                                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                                    } else {
+                                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -805,6 +913,10 @@ fun HomePreview() {
             currentFolderName = "My Drive",
             isGridView = false,
             connectivityStatus = ConnectivityObserver.Status.Available,
+            duplicateToConfirm = null,
+            currentUploads = emptyList(),
+            onConfirmSkip = {},
+            onConfirmOverwrite = {},
             onNavigateToTransfers = {},
             onNavigateToSettings = {},
             onNavigateToPreview = { _ -> },
@@ -827,8 +939,6 @@ fun HomePreview() {
         )
     }
 }
-
-
 
 @Composable
 fun NewActionItem(icon: ImageVector, label: String, onClick: () -> Unit) {
@@ -1005,7 +1115,7 @@ fun DriveListItem(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun DriveGridItem(
     item: DriveItem,
@@ -1155,7 +1265,7 @@ fun DriveGridItem(
 }
 
 @Composable
-fun InfoDialog(item: DriveItem, onDismiss: () -> Unit) {
+fun InfoDialog(item: DriveItem, onDismiss = () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.item_info)) },
