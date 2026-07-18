@@ -18,6 +18,9 @@ enum class FilterType {
     ALL, PHOTOS, VIDEOS, AUDIO, DOCUMENTS
 }
 
+// Data model penampung berkas duplikat yang membutuhkan konfirmasi user
+data class DuplicateUploadTask(val filePath: String, val fileName: String)
+
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     private val driveRepository: DriveRepository,
@@ -51,6 +54,14 @@ class HomeViewModel @Inject constructor(
     private val _isInitialLoading = MutableStateFlow(true)
     val isInitialLoading = _isInitialLoading.asStateFlow()
 
+    // --- FITUR BARU: MANAJEMEN DIALOG DUPLIKAT ---
+    private val _pendingDuplicates = MutableStateFlow<List<DuplicateUploadTask>>(emptyList())
+    
+    // UI Screen tinggal memantau (observe) StateFlow ini. Jika tidak null, tampilkan Pop-Up Dialog Skip/Overwrite!
+    val duplicateToConfirm: StateFlow<DuplicateUploadTask?> = _pendingDuplicates
+        .map { it.firstOrNull() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
     val totalStorageUsed: StateFlow<Long> = driveRepository.getTotalStorageUsed()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
 
@@ -71,26 +82,23 @@ class HomeViewModel @Inject constructor(
                 FilterType.DOCUMENTS -> items.filter { it is DriveItem.File && !it.mimeType.startsWith("image/") && !it.mimeType.startsWith("video/") && !it.mimeType.startsWith("audio/") }
             }
 
-            // Fix the infinite reordering glitch:
-            // 1. Keep folders always at the top
-            // 2. Sort consistently within folders and files
             val (folders, files) = filteredByType.partition { it is DriveItem.Folder }
             
             val sortedFolders = when (order) {
                 SortOrder.NAME -> folders.sortedBy { it.name }
-                else -> folders.sortedByDescending { it.id } // Consistent sort for folders
+                else -> folders.sortedByDescending { it.id }
             }
 
             val sortedFiles = when (order) {
                 SortOrder.NAME -> files.sortedBy { it.name }
-                SortOrder.DATE -> files // Already sorted by DATE in Repo
+                SortOrder.DATE -> files
                 SortOrder.SIZE -> files.sortedByDescending { (it as? DriveItem.File)?.size ?: 0L }
             }
 
             sortedFolders + sortedFiles
         }
     }.flatMapLatest { it }
-    .distinctUntilChanged() // Crucial to stop the glitch
+    .distinctUntilChanged()
     .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
@@ -138,12 +146,10 @@ class HomeViewModel @Inject constructor(
             
             driveRepository.fetchFiles(_currentFolderId.value)
             
-            // Give a small delay for DB to sync and UI to feel smooth
             kotlinx.coroutines.delay(1000)
             _isInitialLoading.value = false
             _isRefreshing.value = false
             
-            // Second fetch to ensure everything is caught if TDLib was still processing
             if (items.value.isEmpty()) {
                 kotlinx.coroutines.delay(2000)
                 driveRepository.fetchFiles(_currentFolderId.value)
@@ -151,9 +157,48 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    // --- PEMBARUAN LOGIKA UPLOAD DENGAN DETEKSI DUPLIKAT ---
     fun uploadFile(filePath: String, fileName: String) {
         viewModelScope.launch {
-            driveRepository.uploadFile(filePath, fileName, _currentFolderId.value)
+            // Cek apakah ada file dengan nama yang persis sama di folder ini
+            val hasDuplicate = items.value.any { it is DriveItem.File && it.name.equals(fileName, ignoreCase = true) }
+            
+            if (hasDuplicate) {
+                // Jika duplikat, kunci di antrean UI dan tunggu keputusan jarimu
+                _pendingDuplicates.update { currentList -> currentList + DuplicateUploadTask(filePath, fileName) }
+            } else {
+                // Jika bersih, langsung kirim ke pipa antrean latar belakang
+                driveRepository.uploadFile(filePath, fileName, _currentFolderId.value)
+            }
+        }
+    }
+
+    // Aksi 1: Lewati (Jangan upload yang kembar)
+    fun confirmSkip() {
+        _pendingDuplicates.update { currentList ->
+            if (currentList.isNotEmpty()) currentList.drop(1) else emptyList()
+        }
+    }
+
+    // Aksi 2: Timpa (Hapus file lama di Telegram biar bersih, lalu upload yang baru)
+    fun confirmOverwrite() {
+        val task = duplicateToConfirm.value ?: return
+        viewModelScope.launch {
+            // Cari target file lama berdasarkan kesamaan nama
+            val oldItem = items.value.find { it is DriveItem.File && it.name.equals(task.fileName, ignoreCase = true) }
+            
+            oldItem?.let { item ->
+                val fromChatId = _currentFolderId.value ?: driveRepository.getSavedMessagesChatId()
+                driveRepository.permanentlyDeleteItems(fromChatId, listOf(item))
+            }
+            
+            // Masukkan file baru ke server
+            driveRepository.uploadFile(task.filePath, task.fileName, _currentFolderId.value)
+            
+            // Lepas antrean saat ini untuk lanjut ke file duplikat berikutnya
+            _pendingDuplicates.update { currentList ->
+                if (currentList.isNotEmpty()) currentList.drop(1) else emptyList()
+            }
         }
     }
 
