@@ -7,8 +7,9 @@ import com.awd.teledrive.data.repository.DriveRepository
 import com.awd.teledrive.data.repository.UploadProgressItem
 import com.awd.teledrive.domain.model.DriveItem
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.flow.update // PERBAIKAN UTAMA: Mengimpor fungsi update eksternal agar dikenali compiler
+import kotlinx.coroutines.flow.update 
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -144,8 +145,9 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    // PERBAIKAN UTAMA: Memindahkan looping pencocokan data ke Dispatchers.Default (Background Thread)
     fun uploadFile(filePath: String, fileName: String) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.Default) {
             val hasDuplicate = items.value.any { it is DriveItem.File && it.name.equals(fileName, ignoreCase = true) }
             if (hasDuplicate) {
                 _pendingDuplicates.update { currentList -> currentList + DuplicateUploadTask(filePath, fileName) }
@@ -163,7 +165,7 @@ class HomeViewModel @Inject constructor(
 
     fun confirmOverwrite() {
         val task = duplicateToConfirm.value ?: return
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.Default) {
             val oldItem = items.value.find { it is DriveItem.File && it.name.equals(task.fileName, ignoreCase = true) }
             oldItem?.let { item ->
                 val fromChatId = _currentFolderId.value ?: driveRepository.getSavedMessagesChatId()
