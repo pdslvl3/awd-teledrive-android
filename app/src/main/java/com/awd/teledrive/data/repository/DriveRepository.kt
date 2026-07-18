@@ -47,7 +47,7 @@ class DriveRepository @Inject constructor(
     // MANAJER ANTRIAN UPLOAD (Mencegah Crash 7GB Massal)
     private val uploadQueue = java.util.concurrent.ConcurrentLinkedQueue<UploadTask>()
     private var activeUploads = 0
-    private const val MAX_CONCURRENT_UPLOADS = 2 // Maksimal 2 file berjalan paralel, sisanya antre
+    private val MAX_CONCURRENT_UPLOADS = 2 // SUDAH DIPERBAIKI: Menghapus kata 'const' agar disukai compiler
 
     data class UploadTask(val filePath: String, val originalFileName: String, val chatId: Long?)
 
@@ -72,7 +72,6 @@ class DriveRepository @Inject constructor(
                     }
                     driveDao.updateLocalPath(fileId, file.local.path)
                     
-                    // PENGOPTIMALAN: Hanya refresh file utama, abaikan badai refresh jika itu cuma thumbnail mini
                     fetchFiles()
                 } else if (file.remote.isUploadingCompleted) {
                     Log.d("DriveRepo", "Upload completed for: ${file.remote.uniqueId}")
@@ -130,7 +129,6 @@ class DriveRepository @Inject constructor(
         }
     }
 
-    // SOLUSI BUG 1 & 3: Penjinak Badai Refresh Jeda 1 Detik (Anti-Flicker & Anti-Crash Database)
     fun fetchFiles(chatId: Long? = null) {
         val targetChatId = chatId ?: savedMessagesChatId
         Log.d("DriveRepo", "fetchFiles called for chatId: $chatId, targetChatId: $targetChatId")
@@ -153,7 +151,7 @@ class DriveRepository @Inject constructor(
     private fun triggerDebouncedFetch(chatId: Long) {
         fetchJob?.cancel()
         fetchJob = scope.launch {
-            delay(1000) // Tahan proses refresh selama 1 detik agar data massal berkumpul dulu
+            delay(1000)
             loadAllDriveItems(chatId)
         }
     }
@@ -261,7 +259,6 @@ class DriveRepository @Inject constructor(
                                 createdAt = message.date.toLong() * 1000
                             )
                         }
-                        // SOLUSI BUG 4: Menangkap File Animasi & Video Pendek Tanpa Suara (GIF/MP4)
                         is TdApi.MessageAnimation -> {
                             val animFile = content.animation.animation
                             val resolvedMimeType = MimeTypeHelper.resolveMimeType(content.animation.fileName, content.animation.mimeType)
@@ -342,7 +339,6 @@ class DriveRepository @Inject constructor(
         }
     }
 
-    // SOLUSI BUG 2: Implementasi Antrean Upload (Queue System)
     fun uploadFile(filePath: String, originalFileName: String, chatId: Long? = null) {
         uploadQueue.add(UploadTask(filePath, originalFileName, chatId))
         processUploadQueue()
