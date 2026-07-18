@@ -151,18 +151,24 @@ class DriveRepository @Inject constructor(
         }
     }
 
-    fun fetchFiles(chatId: Long? = null) {
+fun fetchFiles(chatId: Long? = null) {
         val targetChatId = chatId ?: savedMessagesChatId
         if (targetChatId == 0L) {
             telegramClient.send(TdApi.GetMe()) { result ->
                 if (result is TdApi.User) {
                     savedMessagesChatId = result.id
                     _savedMessagesChatIdFlow.value = result.id
-                    triggerDebouncedFetch(savedMessagesChatId)
+                    // Buka koneksi sinkronisasi aktif untuk Room Utama sebelum menarik data
+                    telegramClient.send(TdApi.OpenChat(result.id)) {
+                        triggerDebouncedFetch(result.id)
+                    }
                 }
             }
         } else {
-            triggerDebouncedFetch(targetChatId)
+            // Buka koneksi sinkronisasi aktif untuk Folder Supergroup sebelum menarik data
+            telegramClient.send(TdApi.OpenChat(targetChatId)) {
+                triggerDebouncedFetch(targetChatId)
+            }
         }
     }
 
