@@ -58,12 +58,31 @@ class DriveRepository @Inject constructor(
 
     data class UploadTask(val filePath: String, val originalFileName: String, val chatId: Long?)
 
-    init {
+        init {
         scope.launch {
             telegramClient.fileUpdates.collect { update ->
                 val file = update.file
                 val uniqueId = file.remote.uniqueId
                 val fileId = file.id
+                
+                // 1. Bersihkan tugas dari kartu antrean jika proses unggah selesai/gagal
+                if (file.remote.isUploadingCompleted || (!file.remote.isUploadingActive && file.remote.uploadedSize == 0L && activeTasks.isNotEmpty())) {
+                    Log.d("DriveRepo", "Upload selesai/berhenti untuk file ID: $fileId")
+                    // Mengambil data task yang tersisa untuk dibersihkan dari antrean visual
+                    synchronized(activeTasks) {
+                        if (activeTasks.isNotEmpty()) {
+                            // Hapus antrean paling depan yang sudah beres diproses
+                            activeTasks.removeAt(0)
+                        }
+                    }
+                    triggerProgressUpdate()
+                    fetchFiles()
+                }
+
+                // 2. SENSOR AKTIF: Tangkap pergerakan trafik data saat Telegram sedang mengunggah berkas
+                if (file.remote.isUploadingActive) {
+                    triggerProgressUpdate()
+                }
                 
                 if (file.local.isDownloadingCompleted && file.local.path.isNotEmpty()) {
                     val fileName = exportOnComplete[uniqueId] ?: exportOnComplete["temp_$fileId"]
@@ -80,10 +99,8 @@ class DriveRepository @Inject constructor(
                     driveDao.updateLocalPath(fileId, file.local.path)
                     
                     fetchFiles()
-                } else if (file.remote.isUploadingCompleted) {
-                    Log.d("DriveRepo", "Upload completed for: ${file.remote.uniqueId}")
-                    fetchFiles()
-                }
+                    triggerProgressUpdate()
+                } 
 
                 if (file.local.canBeDownloaded.not() && !file.local.isDownloadingCompleted && file.local.isDownloadingActive) {
                    Log.e("DriveRepo", "TDLib Download Error for file ${file.id}: Local path = ${file.local.path}")
@@ -91,6 +108,7 @@ class DriveRepository @Inject constructor(
             }
         }
     }
+
 
     // Mengaktifkan sistem peredam kejut jeda 200ms
     private fun triggerProgressUpdate() {
