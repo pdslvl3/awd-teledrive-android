@@ -31,3 +31,14 @@ jobs:
       with:
         name: TeleDrive-BukanKantor
         path: app/build/outputs/apk/
+      - name: Kirim APK ke Telegram
+        run: |
+          APK_PATH=$(find app/build/outputs/apk/ -name "*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            APK_PATH=$(find . -name "*.apk" | head -n 1)
+          fi
+          curl -F chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+               -F document=@"$APK_PATH" \
+               -F caption="🚀 **TeleDrive Matang!** Silakan unduh APK hasil perbaikan terbaru ini, Bos." \
+               https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument
+               
