@@ -27,6 +27,9 @@ import javax.inject.Singleton
 import android.os.Build
 import com.awd.teledrive.core.MimeTypeHelper
 
+// Model data ditaruh di tingkat file agar mudah diimpor oleh ViewModel
+data class UploadProgressItem(val fileName: String, val status: String)
+
 @Singleton
 class DriveRepository @Inject constructor(
     private val telegramClient: TelegramClient,
@@ -43,15 +46,10 @@ class DriveRepository @Inject constructor(
     
     private var fetchJob: kotlinx.coroutines.Job? = null
 
-    // --- FITUR BARU: MODEL & CHANNEL INFORMASI NOTIFIKASI UPLOAD ---
-    data class UploadProgressItem(val fileName: String, val status: String)
-    
     private val _currentUploads = MutableStateFlow<List<UploadProgressItem>>(emptyList())
     val currentUploads: Flow<List<UploadProgressItem>> = _currentUploads.asStateFlow()
     
-    // Pencatat daftar berkas yang sedang aktif ditransfer secara real-time
     private val activeTasks = java.util.Collections.synchronizedList(mutableListOf<String>())
-
     private val uploadQueue = java.util.concurrent.ConcurrentLinkedQueue<UploadTask>()
     private var activeUploads = 0
     private val MAX_CONCURRENT_UPLOADS = 2 
@@ -92,7 +90,6 @@ class DriveRepository @Inject constructor(
         }
     }
 
-    // Fungsi pembuat struktur notifikasi gabungan antara berkas aktif dan antrean
     private fun updateUploadProgressFlow() {
         val list = mutableListOf<UploadProgressItem>()
         synchronized(activeTasks) {
@@ -180,24 +177,15 @@ class DriveRepository @Inject constructor(
                             val docFile = content.document.document
                             val resolvedMimeType = MimeTypeHelper.resolveMimeType(content.document.fileName, content.document.mimeType)
                             DriveItemEntity(
-                                id = message.id,
-                                name = content.document.fileName,
-                                size = docFile.expectedSize,
-                                mimeType = resolvedMimeType,
-                                telegramFileId = docFile.id,
-                                parentChatId = chatId,
-                                isFolder = false,
+                                id = message.id, name = content.document.fileName, size = docFile.expectedSize, mimeType = resolvedMimeType,
+                                telegramFileId = docFile.id, parentChatId = chatId, isFolder = false,
                                 thumbnailPath = when {
                                     thumb?.file?.local?.path?.isNotEmpty() == true -> thumb.file.local.path
                                     resolvedMimeType.startsWith("image/") && docFile.local.path.isNotEmpty() -> docFile.local.path
                                     else -> null
                                 },
-                                localPath = docFile.local.path.takeIf { it.isNotEmpty() },
-                                isStarred = false,
-                                thumbnailFileId = thumb?.file?.id,
-                                remoteUniqueId = docFile.remote.uniqueId,
-                                thumbnailRemoteUniqueId = thumb?.file?.remote?.uniqueId,
-                                createdAt = message.date.toLong() * 1000
+                                localPath = docFile.local.path.takeIf { it.isNotEmpty() }, isStarred = false, thumbnailFileId = thumb?.file?.id,
+                                remoteUniqueId = docFile.remote.uniqueId, thumbnailRemoteUniqueId = thumb?.file?.remote?.uniqueId, createdAt = message.date.toLong() * 1000
                             )
                         }
                         is TdApi.MessagePhoto -> {
@@ -208,20 +196,11 @@ class DriveRepository @Inject constructor(
                             }
                             val photoFile = photo?.photo
                             DriveItemEntity(
-                                id = message.id,
-                                name = "Photo_${message.id}.jpg",
-                                size = photoFile?.expectedSize ?: 0L,
-                                mimeType = "image/jpeg",
-                                telegramFileId = photoFile?.id ?: 0,
-                                parentChatId = chatId,
-                                isFolder = false,
+                                id = message.id, name = "Photo_${message.id}.jpg", size = photoFile?.expectedSize ?: 0L, mimeType = "image/jpeg",
+                                telegramFileId = photoFile?.id ?: 0, parentChatId = chatId, isFolder = false,
                                 thumbnailPath = thumb?.photo?.local?.path?.takeIf { it.isNotEmpty() } ?: photoFile?.local?.path?.takeIf { it.isNotEmpty() },
-                                localPath = photoFile?.local?.path?.takeIf { it.isNotEmpty() },
-                                isStarred = false,
-                                thumbnailFileId = thumb?.photo?.id,
-                                remoteUniqueId = photoFile?.remote?.uniqueId,
-                                thumbnailRemoteUniqueId = thumb?.photo?.remote?.uniqueId,
-                                createdAt = message.date.toLong() * 1000
+                                localPath = photoFile?.local?.path?.takeIf { it.isNotEmpty() }, isStarred = false, thumbnailFileId = thumb?.photo?.id,
+                                remoteUniqueId = photoFile?.remote?.uniqueId, thumbnailRemoteUniqueId = thumb?.photo?.remote?.uniqueId, createdAt = message.date.toLong() * 1000
                             )
                         }
                         is TdApi.MessageVideo -> {
@@ -232,57 +211,29 @@ class DriveRepository @Inject constructor(
                             val videoFile = content.video.video
                             val resolvedMimeType = MimeTypeHelper.resolveMimeType(content.video.fileName, content.video.mimeType)
                             DriveItemEntity(
-                                id = message.id,
-                                name = content.video.fileName,
-                                size = videoFile.expectedSize,
-                                mimeType = resolvedMimeType,
-                                telegramFileId = videoFile.id,
-                                parentChatId = chatId,
-                                isFolder = false,
-                                thumbnailPath = thumb?.file?.local?.path?.takeIf { it.isNotEmpty() },
-                                localPath = videoFile.local.path.takeIf { it.isNotEmpty() },
-                                isStarred = false,
-                                thumbnailFileId = thumb?.file?.id,
-                                remoteUniqueId = videoFile.remote.uniqueId,
-                                thumbnailRemoteUniqueId = thumb?.file?.remote?.uniqueId,
-                                createdAt = message.date.toLong() * 1000
+                                id = message.id, name = content.video.fileName, size = videoFile.expectedSize, mimeType = resolvedMimeType,
+                                telegramFileId = videoFile.id, parentChatId = chatId, isFolder = false, thumbnailPath = thumb?.file?.local?.path?.takeIf { it.isNotEmpty() },
+                                localPath = videoFile.local.path.takeIf { it.isNotEmpty() }, isStarred = false, thumbnailFileId = thumb?.file?.id,
+                                remoteUniqueId = videoFile.remote.uniqueId, thumbnailRemoteUniqueId = thumb?.file?.remote?.uniqueId, createdAt = message.date.toLong() * 1000
                             )
                         }
                         is TdApi.MessageAudio -> {
                             val audioFile = content.audio.audio
                             val fileName = content.audio.fileName.ifEmpty { "Audio_${message.id}.mp3" }
                             DriveItemEntity(
-                                id = message.id,
-                                name = fileName,
-                                size = audioFile.expectedSize,
-                                mimeType = MimeTypeHelper.resolveMimeType(fileName, content.audio.mimeType),
-                                telegramFileId = audioFile.id,
-                                parentChatId = chatId,
-                                isFolder = false,
-                                localPath = audioFile.local.path.takeIf { it.isNotEmpty() },
-                                isStarred = false,
-                                remoteUniqueId = audioFile.remote.uniqueId,
-                                createdAt = message.date.toLong() * 1000
+                                id = message.id, name = fileName, size = audioFile.expectedSize, mimeType = MimeTypeHelper.resolveMimeType(fileName, content.audio.mimeType),
+                                telegramFileId = audioFile.id, parentChatId = chatId, isFolder = false, localPath = audioFile.local.path.takeIf { it.isNotEmpty() },
+                                isStarred = false, remoteUniqueId = audioFile.remote.uniqueId, createdAt = message.date.toLong() * 1000
                             )
                         }
                         is TdApi.MessageAnimation -> {
                             val animFile = content.animation.animation
                             val resolvedMimeType = MimeTypeHelper.resolveMimeType(content.animation.fileName, content.animation.mimeType)
                             DriveItemEntity(
-                                id = message.id,
-                                name = content.animation.fileName.ifEmpty { "VideoShort_${message.id}.mp4" },
-                                size = animFile.expectedSize,
-                                mimeType = resolvedMimeType,
-                                telegramFileId = animFile.id,
-                                parentChatId = chatId,
-                                isFolder = false,
-                                thumbnailPath = content.animation.thumbnail?.file?.local?.path?.takeIf { it.isNotEmpty() },
-                                localPath = animFile.local.path.takeIf { it.isNotEmpty() },
-                                isStarred = false,
-                                thumbnailFileId = content.animation.thumbnail?.file?.id,
-                                remoteUniqueId = animFile.remote.uniqueId,
-                                thumbnailRemoteUniqueId = content.animation.thumbnail?.file?.remote?.uniqueId,
-                                createdAt = message.date.toLong() * 1000
+                                id = message.id, name = content.animation.fileName.ifEmpty { "VideoShort_${message.id}.mp4" }, size = animFile.expectedSize, mimeType = resolvedMimeType,
+                                telegramFileId = animFile.id, parentChatId = chatId, isFolder = false, thumbnailPath = content.animation.thumbnail?.file?.local?.path?.takeIf { it.isNotEmpty() },
+                                localPath = animFile.local.path.takeIf { it.isNotEmpty() }, isStarred = false, thumbnailFileId = content.animation.thumbnail?.file?.id,
+                                remoteUniqueId = animFile.remote.uniqueId, thumbnailRemoteUniqueId = content.animation.thumbnail?.file?.remote?.uniqueId, createdAt = message.date.toLong() * 1000
                             )
                         }
                         else -> null
@@ -295,6 +246,7 @@ class DriveRepository @Inject constructor(
             }
         }
 
+        // PERBAIKAN UTAMA: Memastikan seluruh callback operasi database dibungkus scope.launch secara aman
         if (chatId == savedMessagesChatId && savedMessagesChatId != 0L) {
             telegramClient.send(TdApi.GetChats(TdApi.ChatListMain(), 100)) { result ->
                 if (result is TdApi.Chats) {
@@ -305,11 +257,6 @@ class DriveRepository @Inject constructor(
 
                     result.chatIds.forEach { cid ->
                         telegramClient.send(TdApi.GetChat(cid)) { chatResult ->
-                            fun checkCompletion() {
-                                if (processedCount.incrementAndGet() == totalChats) {
-                                    scope.launch { driveDao.insertItems(folderEntities) }
-                                }
-                            }
                             if (chatResult is TdApi.Chat) {
                                 val type = chatResult.type
                                 if (type is TdApi.ChatTypeSupergroup && type.isChannel && cid != savedMessagesChatId) {
@@ -317,19 +264,32 @@ class DriveRepository @Inject constructor(
                                         if (sgResult is TdApi.Supergroup) {
                                             val status = sgResult.status
                                             if (status is TdApi.ChatMemberStatusCreator || status is TdApi.ChatMemberStatusAdministrator) {
-                                                val existing = driveDao.getItemById(chatResult.id, savedMessagesChatId)
-                                                folderEntities.add(
-                                                    DriveItemEntity(
-                                                        id = chatResult.id, name = chatResult.title, size = 0, mimeType = "folder",
-                                                        telegramFileId = 0, parentChatId = savedMessagesChatId, isFolder = true, isStarred = existing?.isStarred ?: false
+                                                // DI-BUNGKUS SCOPE LAUNCH: Menyembuhkan error kompilasi database
+                                                scope.launch {
+                                                    val existing = driveDao.getItemById(chatResult.id, savedMessagesChatId)
+                                                    folderEntities.add(
+                                                        DriveItemEntity(
+                                                            id = chatResult.id, name = chatResult.title, size = 0, mimeType = "folder",
+                                                            telegramFileId = 0, parentChatId = savedMessagesChatId, isFolder = true, isStarred = existing?.isStarred ?: false
+                                                        )
                                                     )
-                                                )
+                                                    if (processedCount.incrementAndGet() == totalChats) {
+                                                        driveDao.insertItems(folderEntities)
+                                                    }
+                                                }
+                                                return@send
                                             }
                                         }
-                                        checkCompletion()
+                                        if (processedCount.incrementAndGet() == totalChats) {
+                                            scope.launch { driveDao.insertItems(folderEntities) }
+                                        }
                                     }
-                                } else { checkCompletion() }
-                            } else { checkCompletion() }
+                                    return@send
+                                }
+                            }
+                            if (processedCount.incrementAndGet() == totalChats) {
+                                scope.launch { driveDao.insertItems(folderEntities) }
+                            }
                         }
                     }
                 }
@@ -345,7 +305,7 @@ class DriveRepository @Inject constructor(
 
     fun uploadFile(filePath: String, originalFileName: String, chatId: Long? = null) {
         uploadQueue.add(UploadTask(filePath, originalFileName, chatId))
-        updateUploadProgressFlow() // Update notifikasi antrean bertambah
+        updateUploadProgressFlow()
         processUploadQueue()
     }
 
@@ -367,7 +327,7 @@ class DriveRepository @Inject constructor(
             return
         }
 
-        activeTasks.add(task.originalFileName) // Catat file masuk proses unggah aktif
+        activeTasks.add(task.originalFileName)
         updateUploadProgressFlow()
 
         startTransferService()
@@ -384,7 +344,7 @@ class DriveRepository @Inject constructor(
                     )
                 }
             }
-            activeTasks.remove(task.originalFileName) // Hapus berkas dari daftar aktif karena selesai
+            activeTasks.remove(task.originalFileName)
             updateUploadProgressFlow()
             decrementActiveUploads()
             fetchFiles(targetChatId)
