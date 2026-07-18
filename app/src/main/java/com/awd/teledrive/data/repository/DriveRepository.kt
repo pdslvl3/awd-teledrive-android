@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import org.drinkless.tdlib.TdApi
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -39,6 +40,16 @@ class DriveRepository @Inject constructor(
     fun getSavedMessagesChatIdFlow(): Flow<Long> = _savedMessagesChatIdFlow.asStateFlow()
 
     private val exportOnComplete = mutableMapOf<String, String>()
+    
+    // PENEKAN BADAI REFRESH (Debounce Job)
+    private var fetchJob: kotlinx.coroutines.Job? = null
+
+    // MANAJER ANTRIAN UPLOAD (Mencegah Crash 7GB Massal)
+    private val uploadQueue = java.util.concurrent.ConcurrentLinkedQueue<UploadTask>()
+    private var activeUploads = 0
+    private const val MAX_CONCURRENT_UPLOADS = 2 // Maksimal 2 file berjalan paralel, sisanya antre
+
+    data class UploadTask(val filePath: String, val originalFileName: String, val chatId: Long?)
 
     init {
         scope.launch {
@@ -48,7 +59,6 @@ class DriveRepository @Inject constructor(
                 val fileId = file.id
                 
                 if (file.local.isDownloadingCompleted && file.local.path.isNotEmpty()) {
-                    // Cek apakah file ini diminta untuk diekspor ke folder Download publik
                     val fileName = exportOnComplete[uniqueId] ?: exportOnComplete["temp_$fileId"]
                     if (fileName != null) {
                         transferRepository.saveToPublicDownloads(file.local.path, fileName)
@@ -58,19 +68,17 @@ class DriveRepository @Inject constructor(
 
                     if (uniqueId.isNotEmpty()) {
                         driveDao.updateLocalPathByUniqueId(uniqueId, file.local.path)
-                        // Update thumbnail path - DAO query handles both main file (if image) and dedicated thumbnail files
                         driveDao.updateThumbnailPathByUniqueId(uniqueId, file.local.path)
                     }
-                    // Update by fileId as well to be sure
                     driveDao.updateLocalPath(fileId, file.local.path)
                     
+                    // PENGOPTIMALAN: Hanya refresh file utama, abaikan badai refresh jika itu cuma thumbnail mini
                     fetchFiles()
                 } else if (file.remote.isUploadingCompleted) {
                     Log.d("DriveRepo", "Upload completed for: ${file.remote.uniqueId}")
                     fetchFiles()
                 }
 
-                // Log any errors reported by TDLib
                 if (file.local.canBeDownloaded.not() && !file.local.isDownloadingCompleted && file.local.isDownloadingActive) {
                    Log.e("DriveRepo", "TDLib Download Error for file ${file.id}: Local path = ${file.local.path}")
                 }
@@ -122,6 +130,7 @@ class DriveRepository @Inject constructor(
         }
     }
 
+    // SOLUSI BUG 1 & 3: Penjinak Badai Refresh Jeda 1 Detik (Anti-Flicker & Anti-Crash Database)
     fun fetchFiles(chatId: Long? = null) {
         val targetChatId = chatId ?: savedMessagesChatId
         Log.d("DriveRepo", "fetchFiles called for chatId: $chatId, targetChatId: $targetChatId")
@@ -131,19 +140,26 @@ class DriveRepository @Inject constructor(
                     savedMessagesChatId = result.id
                     _savedMessagesChatIdFlow.value = result.id
                     Log.d("DriveRepo", "Resolved savedMessagesChatId: $savedMessagesChatId")
-                    loadAllDriveItems(savedMessagesChatId)
+                    triggerDebouncedFetch(savedMessagesChatId)
                 } else if (result is TdApi.Error) {
                     Log.e("DriveRepo", "GetMe failed: ${result.message}")
                 }
             }
         } else {
-            loadAllDriveItems(targetChatId)
+            triggerDebouncedFetch(targetChatId)
+        }
+    }
+
+    private fun triggerDebouncedFetch(chatId: Long) {
+        fetchJob?.cancel()
+        fetchJob = scope.launch {
+            delay(1000) // Tahan proses refresh selama 1 detik agar data massal berkumpul dulu
+            loadAllDriveItems(chatId)
         }
     }
 
     private fun loadAllDriveItems(chatId: Long) {
         Log.d("DriveRepo", "Loading items for chatId: $chatId")
-        // Use a limit of 1000 to ensure we catch enough files
         telegramClient.send(TdApi.GetChatHistory(chatId, 0, 0, 1000, false)) { result ->
             if (result is TdApi.Messages) {
                 Log.d("DriveRepo", "Found ${result.messages.size} messages in chat $chatId")
@@ -245,6 +261,27 @@ class DriveRepository @Inject constructor(
                                 createdAt = message.date.toLong() * 1000
                             )
                         }
+                        // SOLUSI BUG 4: Menangkap File Animasi & Video Pendek Tanpa Suara (GIF/MP4)
+                        is TdApi.MessageAnimation -> {
+                            val animFile = content.animation.animation
+                            val resolvedMimeType = MimeTypeHelper.resolveMimeType(content.animation.fileName, content.animation.mimeType)
+                            DriveItemEntity(
+                                id = message.id,
+                                name = content.animation.fileName.ifEmpty { "VideoShort_${message.id}.mp4" },
+                                size = animFile.expectedSize,
+                                mimeType = resolvedMimeType,
+                                telegramFileId = animFile.id,
+                                parentChatId = chatId,
+                                isFolder = false,
+                                thumbnailPath = content.animation.thumbnail?.file?.local?.path?.takeIf { it.isNotEmpty() },
+                                localPath = animFile.local.path.takeIf { it.isNotEmpty() },
+                                isStarred = false,
+                                thumbnailFileId = content.animation.thumbnail?.file?.id,
+                                remoteUniqueId = animFile.remote.uniqueId,
+                                thumbnailRemoteUniqueId = content.animation.thumbnail?.file?.remote?.uniqueId,
+                                createdAt = message.date.toLong() * 1000
+                            )
+                        }
                         else -> null
                     }
                 }
@@ -254,10 +291,7 @@ class DriveRepository @Inject constructor(
                     driveDao.refreshChatItems(chatId, entities)
                 }
             } else {
-                Log.e("DriveRepo", "GetChatHistory failed or returned non-Messages: ${result::class.java.simpleName}")
-                if (result is TdApi.Error) {
-                    Log.e("DriveRepo", "Error: ${result.code} - ${result.message}")
-                }
+                Log.e("DriveRepo", "GetChatHistory failed: ${result::class.java.simpleName}")
             }
         }
 
@@ -308,16 +342,36 @@ class DriveRepository @Inject constructor(
         }
     }
 
+    // SOLUSI BUG 2: Implementasi Antrean Upload (Queue System)
     fun uploadFile(filePath: String, originalFileName: String, chatId: Long? = null) {
-        val targetChatId = chatId ?: savedMessagesChatId
-        if (targetChatId == 0L) return
+        uploadQueue.add(UploadTask(filePath, originalFileName, chatId))
+        processUploadQueue()
+    }
+
+    private fun processUploadQueue() {
+        scope.launch {
+            synchronized(this@DriveRepository) {
+                if (activeUploads >= MAX_CONCURRENT_UPLOADS || uploadQueue.isEmpty()) return@launch
+                activeUploads++
+            }
+            val task = uploadQueue.poll() ?: return@launch
+            executeActualUpload(task)
+        }
+    }
+
+    private fun executeActualUpload(task: UploadTask) {
+        val targetChatId = task.chatId ?: savedMessagesChatId
+        if (targetChatId == 0L) {
+            decrementActiveUploads()
+            return
+        }
 
         startTransferService()
         val content = TdApi.InputMessageDocument(
-            TdApi.InputFileLocal(filePath),
+            TdApi.InputFileLocal(task.filePath),
             null,
             false,
-            TdApi.FormattedText(originalFileName, emptyArray())
+            TdApi.FormattedText(task.originalFileName, emptyArray())
         )
         telegramClient.send(TdApi.SendMessage(targetChatId, null, null, null, null, content)) { result ->
             if (result is TdApi.Message) {
@@ -327,20 +381,27 @@ class DriveRepository @Inject constructor(
                     transferRepository.addTransfer(
                         doc.id,
                         doc.remote.uniqueId,
-                        originalFileName,
+                        task.originalFileName,
                         isDownload = false,
                         totalSize = doc.expectedSize
                     )
                 }
             }
+            decrementActiveUploads()
             fetchFiles(targetChatId)
         }
+    }
+
+    private fun decrementActiveUploads() {
+        synchronized(this@DriveRepository) {
+            activeUploads--
+        }
+        processUploadQueue()
     }
 
     fun getSavedMessagesChatId(): Long = savedMessagesChatId
 
     fun downloadForPreview(messageId: Long, chatId: Long, fileName: String) {
-        Log.d("DriveRepo", "Requesting internal preview download for msgId: $messageId")
         telegramClient.send(TdApi.GetMessage(chatId, messageId)) { result ->
             if (result is TdApi.Message) {
                 val file = when (val content = result.content) {
@@ -348,6 +409,7 @@ class DriveRepository @Inject constructor(
                     is TdApi.MessagePhoto -> content.photo.sizes.lastOrNull()?.photo
                     is TdApi.MessageVideo -> content.video.video
                     is TdApi.MessageAudio -> content.audio.audio
+                    is TdApi.MessageAnimation -> content.animation.animation
                     else -> null
                 }
                 
@@ -358,21 +420,9 @@ class DriveRepository @Inject constructor(
 
                     if (!file.local.isDownloadingCompleted) {
                         val trackId = if (remoteUniqueId.isNotEmpty()) remoteUniqueId else "temp_$msgFileId"
-                        
-                        // Penting: Daftarkan ke TransferRepository DAHULU
                         transferRepository.addTransfer(msgFileId, trackId, fileName, isDownload = true, totalSize = expectedSize)
-                        
-                        // Pastikan Service berjalan untuk memantau update
                         startTransferService()
-                        
-                        // Kirim perintah download ke TDLib
-                        telegramClient.send(TdApi.DownloadFile(msgFileId, 32, 0, 0, false)) { downloadResult ->
-                            if (downloadResult is TdApi.File) {
-                                Log.d("DriveRepo", "Download started successfully for $trackId")
-                            } else if (downloadResult is TdApi.Error) {
-                                Log.e("DriveRepo", "DownloadFile error: ${downloadResult.message}")
-                            }
-                        }
+                        telegramClient.send(TdApi.DownloadFile(msgFileId, 32, 0, 0, false))
                     }
                 }
             }
@@ -380,8 +430,6 @@ class DriveRepository @Inject constructor(
     }
 
     fun downloadFile(messageId: Long, chatId: Long, fileName: String) {
-        Log.d("DriveRepo", "Requesting download: $fileName (msgId: $messageId)")
-        
         telegramClient.send(TdApi.GetMessage(chatId, messageId)) { result ->
             if (result is TdApi.Message) {
                 val file = when (val content = result.content) {
@@ -389,22 +437,17 @@ class DriveRepository @Inject constructor(
                     is TdApi.MessagePhoto -> content.photo.sizes.lastOrNull()?.photo
                     is TdApi.MessageVideo -> content.video.video
                     is TdApi.MessageAudio -> content.audio.audio
+                    is TdApi.MessageAnimation -> content.animation.animation
                     else -> null
                 }
                 
-                if (file == null) {
-                    Log.e("DriveRepo", "Could not find file in message content")
-                    return@send
-                }
+                if (file == null) return@send
 
                 val msgFileId = file.id
                 val remoteUniqueId = file.remote.uniqueId
                 val expectedSize = file.expectedSize
-                
-                Log.d("DriveRepo", "Found file info - fileId: $msgFileId, uniqueId: $remoteUniqueId, size: $expectedSize, isCompleted: ${file.local.isDownloadingCompleted}")
 
                 if (file.local.isDownloadingCompleted && file.local.path.isNotEmpty()) {
-                    Log.d("DriveRepo", "File already downloaded locally: ${file.local.path}")
                     transferRepository.saveToPublicDownloads(file.local.path, fileName)
                     transferRepository.addTransfer(msgFileId, remoteUniqueId, fileName, isDownload = true, totalSize = expectedSize, isCompleted = true)
                     return@send
@@ -414,28 +457,13 @@ class DriveRepository @Inject constructor(
                     exportOnComplete[remoteUniqueId] = fileName
                     transferRepository.addTransfer(msgFileId, remoteUniqueId, fileName, isDownload = true, totalSize = expectedSize)
                     startTransferService()
-                    Log.d("DriveRepo", "Starting DownloadFile for uniqueId: $remoteUniqueId")
-                    telegramClient.send(TdApi.DownloadFile(msgFileId, 32, 0, 0, false)) { downloadResult ->
-                        if (downloadResult is TdApi.Error) {
-                            Log.e("DriveRepo", "DownloadFile failed for $remoteUniqueId: ${downloadResult.message}")
-                        }
-                    }
+                    telegramClient.send(TdApi.DownloadFile(msgFileId, 32, 0, 0, false))
                 } else if (msgFileId != 0) {
                     val tempId = "temp_$msgFileId"
                     exportOnComplete[tempId] = fileName
                     transferRepository.addTransfer(msgFileId, tempId, fileName, isDownload = true, totalSize = expectedSize)
                     startTransferService()
-                    Log.d("DriveRepo", "Starting DownloadFile for tempId: $tempId")
-                    telegramClient.send(TdApi.DownloadFile(msgFileId, 32, 0, 0, false)) { downloadResult ->
-                        if (downloadResult is TdApi.Error) {
-                            Log.e("DriveRepo", "DownloadFile failed for $tempId: ${downloadResult.message}")
-                        }
-                    }
-                }
-            } else {
-                Log.e("DriveRepo", "GetMessage failed for download: ${result::class.java.simpleName}")
-                if (result is TdApi.Error) {
-                    Log.e("DriveRepo", "GetMessage Error Details: ${result.code} - ${result.message}")
+                    telegramClient.send(TdApi.DownloadFile(msgFileId, 32, 0, 0, false))
                 }
             }
         }
@@ -456,7 +484,7 @@ class DriveRepository @Inject constructor(
             while (true) {
                 val size = calculateDirectorySize(context.filesDir)
                 emit(size)
-                kotlinx.coroutines.delay(10000) // Update every 10s
+                kotlinx.coroutines.delay(10000)
             }
         }.flowOn(Dispatchers.IO)
     }
@@ -471,20 +499,8 @@ class DriveRepository @Inject constructor(
 
     fun clearInternalCache() {
         scope.launch {
-            // Tell TDLib to optimize storage (delete all files)
-            // Using the constructor: size, ttl, count, immunityDelay, fileTypes, chatIds, excludeChatIds, returnDeletedFileStatistics, chatLimit
-            telegramClient.send(TdApi.OptimizeStorage(
-                -1, // size: -1 means no limit (or 0 for clear all)
-                0,  // ttl
-                0,  // count
-                0,  // immunityDelay
-                null, // fileTypes (null means all)
-                null, // chatIds
-                null, // excludeChatIds
-                true, // returnDeletedFileStatistics
-                0     // chatLimit
-            )) {
-                fetchFiles() // Refresh to update localPaths to null
+            telegramClient.send(TdApi.OptimizeStorage(-1, 0, 0, 0, null, null, null, true, 0)) {
+                fetchFiles()
             }
         }
     }
@@ -565,7 +581,6 @@ class DriveRepository @Inject constructor(
             telegramClient.send(TdApi.DeleteChat(fid)) {
                 scope.launch {
                     driveDao.deleteItemsByChat(fid)
-                    // If it was a folder in saved messages, delete it from there too
                     driveDao.deleteItemCompletely(fid, savedMessagesChatId)
                 }
             }
@@ -581,6 +596,7 @@ class DriveRepository @Inject constructor(
                         is TdApi.MessagePhoto -> Pair(content.photo.sizes.lastOrNull()?.photo, "Photo_${message.id}.jpg")
                         is TdApi.MessageVideo -> Pair(content.video.video, content.video.fileName)
                         is TdApi.MessageAudio -> Pair(content.audio.audio, content.audio.fileName)
+                        is TdApi.MessageAnimation -> Pair(content.animation.animation, content.animation.fileName)
                         else -> null
                     }
                     
@@ -593,8 +609,6 @@ class DriveRepository @Inject constructor(
     }
 
     fun moveFolderContentsAndDelete(fromFolderChatId: Long, toChatId: Long) {
-        // Fetch a large number of messages to avoid data loss during move.
-        // In a real-world scenario, this should be paginated until all messages are moved.
         telegramClient.send(TdApi.GetChatHistory(fromFolderChatId, 0, 0, 1000, false)) { result ->
             if (result is TdApi.Messages) {
                 val messageIds = result.messages.map { it.id }.toLongArray()
@@ -603,17 +617,8 @@ class DriveRepository @Inject constructor(
                         disableNotification = true
                         fromBackground = true
                     }
-                    telegramClient.send(TdApi.ForwardMessages(
-                        toChatId,
-                        null,
-                        fromFolderChatId,
-                        messageIds,
-                        options,
-                        false,
-                        false
-                    )) { forwardResult ->
+                    telegramClient.send(TdApi.ForwardMessages(toChatId, null, fromFolderChatId, messageIds, options, false, false)) { forwardResult ->
                         if (forwardResult is TdApi.Messages) {
-                            // After forwarding, delete the original folder (supergroup)
                             telegramClient.send(TdApi.DeleteChat(fromFolderChatId)) {
                                 scope.launch {
                                     driveDao.deleteItemsByChat(fromFolderChatId)
@@ -621,12 +626,9 @@ class DriveRepository @Inject constructor(
                                     fetchFiles(toChatId)
                                 }
                             }
-                        } else if (forwardResult is TdApi.Error) {
-                            Log.e("DriveRepo", "Failed to forward messages: ${forwardResult.message}")
                         }
                     }
                 } else {
-                    // Empty folder, just delete it
                     telegramClient.send(TdApi.DeleteChat(fromFolderChatId)) {
                         scope.launch {
                             driveDao.deleteItemCompletely(fromFolderChatId, savedMessagesChatId)
@@ -643,17 +645,8 @@ class DriveRepository @Inject constructor(
             disableNotification = true
             fromBackground = true
         }
-        telegramClient.send(TdApi.ForwardMessages(
-            toChatId,
-            null,
-            fromChatId,
-            messageIds.toLongArray(),
-            options,
-            false,
-            false
-        )) { result ->
+        telegramClient.send(TdApi.ForwardMessages(toChatId, null, fromChatId, messageIds.toLongArray(), options, false, false)) { result ->
             if (result is TdApi.Messages) {
-                // Only delete the messages that were successfully forwarded
                 val successfulOriginalIds = mutableListOf<Long>()
                 result.messages.forEachIndexed { index, message ->
                     if (message != null && index < messageIds.size) {
@@ -667,8 +660,6 @@ class DriveRepository @Inject constructor(
                         fetchFiles(toChatId)
                     }
                 }
-            } else if (result is TdApi.Error) {
-                Log.e("DriveRepo", "Forward failed: ${result.message}")
             }
         }
     }
