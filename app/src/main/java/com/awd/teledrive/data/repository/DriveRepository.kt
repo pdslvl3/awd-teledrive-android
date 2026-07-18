@@ -27,7 +27,6 @@ import javax.inject.Singleton
 import android.os.Build
 import com.awd.teledrive.core.MimeTypeHelper
 
-// Model data ditaruh di tingkat file agar mudah diimpor oleh ViewModel
 data class UploadProgressItem(val fileName: String, val status: String)
 
 @Singleton
@@ -246,49 +245,56 @@ class DriveRepository @Inject constructor(
             }
         }
 
-        // PERBAIKAN UTAMA: Memastikan seluruh callback operasi database dibungkus scope.launch secara aman
+        // PERBAIKAN TOTAL: Seluruh kata 'return@send' dibuang dan diganti struktur IF/ELSE murni
         if (chatId == savedMessagesChatId && savedMessagesChatId != 0L) {
             telegramClient.send(TdApi.GetChats(TdApi.ChatListMain(), 100)) { result ->
                 if (result is TdApi.Chats) {
                     val folderEntities = java.util.Collections.synchronizedList(mutableListOf<DriveItemEntity>())
                     val totalChats = result.chatIds.size
-                    if (totalChats == 0) return@send
-                    val processedCount = java.util.concurrent.atomic.AtomicInteger(0)
-
-                    result.chatIds.forEach { cid ->
-                        telegramClient.send(TdApi.GetChat(cid)) { chatResult ->
-                            if (chatResult is TdApi.Chat) {
-                                val type = chatResult.type
-                                if (type is TdApi.ChatTypeSupergroup && type.isChannel && cid != savedMessagesChatId) {
-                                    telegramClient.send(TdApi.GetSupergroup(type.supergroupId)) { sgResult ->
-                                        if (sgResult is TdApi.Supergroup) {
-                                            val status = sgResult.status
-                                            if (status is TdApi.ChatMemberStatusCreator || status is TdApi.ChatMemberStatusAdministrator) {
-                                                // DI-BUNGKUS SCOPE LAUNCH: Menyembuhkan error kompilasi database
-                                                scope.launch {
-                                                    val existing = driveDao.getItemById(chatResult.id, savedMessagesChatId)
-                                                    folderEntities.add(
-                                                        DriveItemEntity(
-                                                            id = chatResult.id, name = chatResult.title, size = 0, mimeType = "folder",
-                                                            telegramFileId = 0, parentChatId = savedMessagesChatId, isFolder = true, isStarred = existing?.isStarred ?: false
+                    if (totalChats > 0) {
+                        val processedCount = java.util.concurrent.atomic.AtomicInteger(0)
+                        result.chatIds.forEach { cid ->
+                            telegramClient.send(TdApi.GetChat(cid)) { chatResult ->
+                                if (chatResult is TdApi.Chat) {
+                                    val type = chatResult.type
+                                    if (type is TdApi.ChatTypeSupergroup && type.isChannel && cid != savedMessagesChatId) {
+                                        telegramClient.send(TdApi.GetSupergroup(type.supergroupId)) { sgResult ->
+                                            if (sgResult is TdApi.Supergroup) {
+                                                val status = sgResult.status
+                                                if (status is TdApi.ChatMemberStatusCreator || status is TdApi.ChatMemberStatusAdministrator) {
+                                                    scope.launch {
+                                                        val existing = driveDao.getItemById(chatResult.id, savedMessagesChatId)
+                                                        folderEntities.add(
+                                                            DriveItemEntity(
+                                                                id = chatResult.id, name = chatResult.title, size = 0, mimeType = "folder",
+                                                                telegramFileId = 0, parentChatId = savedMessagesChatId, isFolder = true, isStarred = existing?.isStarred ?: false
+                                                            )
                                                         )
-                                                    )
+                                                        if (processedCount.incrementAndGet() == totalChats) {
+                                                            driveDao.insertItems(folderEntities)
+                                                        }
+                                                    }
+                                                } else {
                                                     if (processedCount.incrementAndGet() == totalChats) {
-                                                        driveDao.insertItems(folderEntities)
+                                                        scope.launch { driveDao.insertItems(folderEntities) }
                                                     }
                                                 }
-                                                return@send
+                                            } else {
+                                                if (processedCount.incrementAndGet() == totalChats) {
+                                                    scope.launch { driveDao.insertItems(folderEntities) }
+                                                }
                                             }
                                         }
+                                    } else {
                                         if (processedCount.incrementAndGet() == totalChats) {
                                             scope.launch { driveDao.insertItems(folderEntities) }
                                         }
                                     }
-                                    return@send
+                                } else {
+                                    if (processedCount.incrementAndGet() == totalChats) {
+                                        scope.launch { driveDao.insertItems(folderEntities) }
+                                    }
                                 }
-                            }
-                            if (processedCount.incrementAndGet() == totalChats) {
-                                scope.launch { driveDao.insertItems(folderEntities) }
                             }
                         }
                     }
