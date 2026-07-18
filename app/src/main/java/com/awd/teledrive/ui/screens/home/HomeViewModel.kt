@@ -4,9 +4,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.awd.teledrive.core.ConnectivityObserver
 import com.awd.teledrive.data.repository.DriveRepository
+import com.awd.teledrive.data.repository.UploadProgressItem
 import com.awd.teledrive.domain.model.DriveItem
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.update // PERBAIKAN UTAMA: Mengimpor fungsi update eksternal agar dikenali compiler
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -59,8 +61,7 @@ class HomeViewModel @Inject constructor(
         .map { it.firstOrNull() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
-    // --- FITUR BARU: SALURAN NOTIFIKASI UPLOAD UNTUK LAYAR UI ---
-    val currentUploads: StateFlow<List<DriveRepository.UploadProgressItem>> = driveRepository.currentUploads
+    val currentUploads: StateFlow<List<UploadProgressItem>> = driveRepository.currentUploads
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val totalStorageUsed: StateFlow<Long> = driveRepository.getTotalStorageUsed()
