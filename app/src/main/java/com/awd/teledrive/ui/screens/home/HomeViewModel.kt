@@ -18,7 +18,6 @@ enum class FilterType {
     ALL, PHOTOS, VIDEOS, AUDIO, DOCUMENTS
 }
 
-// Data model penampung berkas duplikat yang membutuhkan konfirmasi user
 data class DuplicateUploadTask(val filePath: String, val fileName: String)
 
 @HiltViewModel
@@ -54,13 +53,15 @@ class HomeViewModel @Inject constructor(
     private val _isInitialLoading = MutableStateFlow(true)
     val isInitialLoading = _isInitialLoading.asStateFlow()
 
-    // --- FITUR BARU: MANAJEMEN DIALOG DUPLIKAT ---
     private val _pendingDuplicates = MutableStateFlow<List<DuplicateUploadTask>>(emptyList())
     
-    // UI Screen tinggal memantau (observe) StateFlow ini. Jika tidak null, tampilkan Pop-Up Dialog Skip/Overwrite!
     val duplicateToConfirm: StateFlow<DuplicateUploadTask?> = _pendingDuplicates
         .map { it.firstOrNull() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    // --- FITUR BARU: SALURAN NOTIFIKASI UPLOAD UNTUK LAYAR UI ---
+    val currentUploads: StateFlow<List<DriveRepository.UploadProgressItem>> = driveRepository.currentUploads
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val totalStorageUsed: StateFlow<Long> = driveRepository.getTotalStorageUsed()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
@@ -105,21 +106,10 @@ class HomeViewModel @Inject constructor(
         fetchItems()
     }
 
-    fun setSortOrder(order: SortOrder) {
-        _sortOrder.value = order
-    }
-
-    fun setFilterType(type: FilterType) {
-        _filterType.value = type
-    }
-
-    fun onSearchQueryChange(query: String) {
-        _searchQuery.value = query
-    }
-
-    fun toggleViewMode() {
-        _isGridView.value = !_isGridView.value
-    }
+    fun setSortOrder(order: SortOrder) { _sortOrder.value = order }
+    fun setFilterType(type: FilterType) { _filterType.value = type }
+    fun onSearchQueryChange(query: String) { _searchQuery.value = query }
+    fun toggleViewMode() { _isGridView.value = !_isGridView.value }
 
     fun navigateToFolder(folderId: Long?, folderName: String) {
         _currentFolderId.value = folderId
@@ -128,15 +118,11 @@ class HomeViewModel @Inject constructor(
     }
 
     fun navigateBack() {
-        if (_currentFolderId.value != null) {
-            navigateToFolder(null, "My TeleDrive")
-        }
+        if (_currentFolderId.value != null) { navigateToFolder(null, "My TeleDrive") }
     }
 
     fun createFolder(name: String) {
-        viewModelScope.launch {
-            driveRepository.createFolder(name)
-        }
+        viewModelScope.launch { driveRepository.createFolder(name) }
     }
 
     fun fetchItems() {
@@ -157,45 +143,32 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    // --- PEMBARUAN LOGIKA UPLOAD DENGAN DETEKSI DUPLIKAT ---
     fun uploadFile(filePath: String, fileName: String) {
         viewModelScope.launch {
-            // Cek apakah ada file dengan nama yang persis sama di folder ini
             val hasDuplicate = items.value.any { it is DriveItem.File && it.name.equals(fileName, ignoreCase = true) }
-            
             if (hasDuplicate) {
-                // Jika duplikat, kunci di antrean UI dan tunggu keputusan jarimu
                 _pendingDuplicates.update { currentList -> currentList + DuplicateUploadTask(filePath, fileName) }
             } else {
-                // Jika bersih, langsung kirim ke pipa antrean latar belakang
                 driveRepository.uploadFile(filePath, fileName, _currentFolderId.value)
             }
         }
     }
 
-    // Aksi 1: Lewati (Jangan upload yang kembar)
     fun confirmSkip() {
         _pendingDuplicates.update { currentList ->
             if (currentList.isNotEmpty()) currentList.drop(1) else emptyList()
         }
     }
 
-    // Aksi 2: Timpa (Hapus file lama di Telegram biar bersih, lalu upload yang baru)
     fun confirmOverwrite() {
         val task = duplicateToConfirm.value ?: return
         viewModelScope.launch {
-            // Cari target file lama berdasarkan kesamaan nama
             val oldItem = items.value.find { it is DriveItem.File && it.name.equals(task.fileName, ignoreCase = true) }
-            
             oldItem?.let { item ->
                 val fromChatId = _currentFolderId.value ?: driveRepository.getSavedMessagesChatId()
                 driveRepository.permanentlyDeleteItems(fromChatId, listOf(item))
             }
-            
-            // Masukkan file baru ke server
             driveRepository.uploadFile(task.filePath, task.fileName, _currentFolderId.value)
-            
-            // Lepas antrean saat ini untuk lanjut ke file duplikat berikutnya
             _pendingDuplicates.update { currentList ->
                 if (currentList.isNotEmpty()) currentList.drop(1) else emptyList()
             }
@@ -203,15 +176,11 @@ class HomeViewModel @Inject constructor(
     }
 
     fun downloadFile(messageId: Long, chatId: Long, fileName: String) {
-        viewModelScope.launch {
-            driveRepository.downloadFile(messageId, chatId, fileName)
-        }
+        viewModelScope.launch { driveRepository.downloadFile(messageId, chatId, fileName) }
     }
 
     fun downloadFolderContents(folderChatId: Long) {
-        viewModelScope.launch {
-            driveRepository.downloadFolderContents(folderChatId)
-        }
+        viewModelScope.launch { driveRepository.downloadFolderContents(folderChatId) }
     }
 
     fun deleteItems(itemsToDelete: List<DriveItem>) {
@@ -224,24 +193,17 @@ class HomeViewModel @Inject constructor(
     fun moveItems(ids: Set<Long>, targetChatId: Long) {
         val fromChatId = _currentFolderId.value ?: driveRepository.getSavedMessagesChatId()
         val destination = if (targetChatId == 0L) driveRepository.getSavedMessagesChatId() else targetChatId
-        
         if (fromChatId != 0L && fromChatId != destination) {
-            viewModelScope.launch {
-                driveRepository.moveItems(fromChatId, destination, ids.toList())
-            }
+            viewModelScope.launch { driveRepository.moveItems(fromChatId, destination, ids.toList()) }
         }
     }
 
     fun moveFolderContentsAndDelete(folderChatId: Long, targetChatId: Long) {
         val destination = if (targetChatId == 0L) driveRepository.getSavedMessagesChatId() else targetChatId
-        viewModelScope.launch {
-            driveRepository.moveFolderContentsAndDelete(folderChatId, destination)
-        }
+        viewModelScope.launch { driveRepository.moveFolderContentsAndDelete(folderChatId, destination) }
     }
 
     fun toggleStarred(item: DriveItem) {
-        viewModelScope.launch {
-            driveRepository.toggleStarred(item)
-        }
+        viewModelScope.launch { driveRepository.toggleStarred(item) }
     }
 }
