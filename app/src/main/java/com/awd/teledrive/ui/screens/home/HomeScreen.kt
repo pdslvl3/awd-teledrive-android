@@ -21,7 +21,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.automirrored.filled.DriveFileMove
-import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.*
@@ -55,8 +54,6 @@ import kotlin.time.Duration.Companion.seconds
 
 import androidx.compose.ui.tooling.preview.Preview
 import com.awd.teledrive.ui.theme.TeledriveTheme
-
-// Mengimpor model data progress dari kamar data repository
 import com.awd.teledrive.data.repository.UploadProgressItem
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -78,13 +75,11 @@ fun HomeScreen(
     val currentFolderName by viewModel.currentFolderName.collectAsState()
     val isGridView by viewModel.isGridView.collectAsState()
     val connectivityStatus by viewModel.connectivityStatus.collectAsState()
-
-    // --- MENGHUBUNGKAN PIPA DATA BARU ---
     val duplicateToConfirm by viewModel.duplicateToConfirm.collectAsState()
     val currentUploads by viewModel.currentUploads.collectAsState()
 
     HomeContent(
-        items = items,
+        driveItems = items, // Diarahkan dengan aman ke nama parameter baru
         totalStorageUsed = totalStorageUsed,
         searchQuery = searchQuery,
         sortOrder = sortOrder,
@@ -124,7 +119,7 @@ fun HomeScreen(
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun HomeContent(
-    items: List<DriveItem>,
+    driveItems: List<DriveItem>, // Nama parameter diubah total untuk mematikan error duplikasi
     totalStorageUsed: Long,
     searchQuery: String,
     sortOrder: SortOrder,
@@ -236,7 +231,6 @@ fun HomeContent(
         }
     }
 
-    // --- VISUAL FITUR 1: DIALOG POP-UP KONFIRMASI BERKAS KEMBAR ---
     if (duplicateToConfirm != null) {
         AlertDialog(
             onDismissRequest = { onConfirmSkip() },
@@ -379,7 +373,7 @@ fun HomeContent(
     }
 
     if (showMoveDialog) {
-        val folders = items.filterIsInstance<DriveItem.Folder>()
+        val folders = driveItems.filterIsInstance<DriveItem.Folder>()
         AlertDialog(
             onDismissRequest = { showMoveDialog = false },
             title = { Text(stringResource(R.string.move_to_folder)) },
@@ -389,8 +383,8 @@ fun HomeContent(
                         headlineContent = { Text(stringResource(R.string.root_storage)) },
                         leadingContent = { Icon(Icons.Default.Home, null, tint = MaterialTheme.colorScheme.primary) },
                         modifier = Modifier.clickable {
-                            val selectedFileIds = items.filter { it.id in selectedItems }.filterIsInstance<DriveItem.File>().map { it.id }
-                            val selectedFolders = items.filter { it.id in selectedItems }.filterIsInstance<DriveItem.Folder>()
+                            val selectedFileIds = driveItems.filter { it.id in selectedItems }.filterIsInstance<DriveItem.File>().map { it.id }
+                            val selectedFolders = driveItems.filter { it.id in selectedItems }.filterIsInstance<DriveItem.Folder>()
                             
                             if (selectedFileIds.isNotEmpty()) {
                                 onMoveItems(selectedFileIds.toSet(), 0L)
@@ -416,8 +410,8 @@ fun HomeContent(
                                         headlineContent = { Text(folder.name) },
                                         leadingContent = { Icon(Icons.Default.Folder, null, tint = MaterialTheme.colorScheme.primary) },
                                         modifier = Modifier.clickable {
-                                            val selectedFileIds = items.filter { it.id in selectedItems }.filterIsInstance<DriveItem.File>().map { it.id }
-                                            val selectedFolders = items.filter { it.id in selectedItems }.filterIsInstance<DriveItem.Folder>()
+                                            val selectedFileIds = driveItems.filter { it.id in selectedItems }.filterIsInstance<DriveItem.File>().map { it.id }
+                                            val selectedFolders = driveItems.filter { it.id in selectedItems }.filterIsInstance<DriveItem.Folder>()
                                             
                                             if (selectedFileIds.isNotEmpty()) {
                                                 onMoveItems(selectedFileIds.toSet(), folder.telegramChatId)
@@ -458,7 +452,7 @@ fun HomeContent(
                     actions = {
                         IconButton(
                             onClick = {
-                                val files = items.filterIsInstance<DriveItem.File>()
+                                val files = driveItems.filterIsInstance<DriveItem.File>()
                                 if (selectedItems.size >= files.size && files.isNotEmpty()) {
                                     selectedItems = emptySet()
                                 } else {
@@ -466,7 +460,7 @@ fun HomeContent(
                                 }
                             }
                         ) {
-                            val files = items.filterIsInstance<DriveItem.File>()
+                            val files = driveItems.filterIsInstance<DriveItem.File>()
                             Icon(
                                 if (selectedItems.size >= files.size && files.isNotEmpty()) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
                                 contentDescription = stringResource(R.string.select_all)
@@ -478,8 +472,8 @@ fun HomeContent(
                                     Toast.makeText(context, context.getString(R.string.offline_msg), Toast.LENGTH_SHORT).show()
                                     return@IconButton
                                 }
-                                val selectedFiles = items.filter { it.id in selectedItems }.filterIsInstance<DriveItem.File>()
-                                val selectedFolders = items.filter { it.id in selectedItems }.filterIsInstance<DriveItem.Folder>()
+                                val selectedFiles = driveItems.filter { it.id in selectedItems }.filterIsInstance<DriveItem.File>()
+                                val selectedFolders = driveItems.filter { it.id in selectedItems }.filterIsInstance<DriveItem.Folder>()
                                 
                                 selectedFiles.forEach { onDownloadFile(it.id, it.parentChatId, it.name) }
                                 selectedFolders.forEach { onDownloadFolderContents(it.telegramChatId) }
@@ -490,7 +484,7 @@ fun HomeContent(
                         ) {
                             Icon(Icons.Default.Download, contentDescription = stringResource(R.string.download))
                         }
-                        val selectedContainsFolder = items.filter { it.id in selectedItems }.any { it is DriveItem.Folder }
+                        val selectedContainsFolder = driveItems.filter { it.id in selectedItems }.any { it is DriveItem.Folder }
                         if (!selectedContainsFolder) {
                             IconButton(
                                 onClick = {
@@ -510,7 +504,7 @@ fun HomeContent(
                                     Toast.makeText(context, context.getString(R.string.offline_msg), Toast.LENGTH_SHORT).show()
                                     return@IconButton
                                 }
-                                val itemsToDelete = items.filter { it.id in selectedItems }
+                                val itemsToDelete = driveItems.filter { it.id in selectedItems }
                                 showDeleteConfirm = itemsToDelete
                             }
                         ) {
@@ -706,7 +700,6 @@ fun HomeContent(
                         }
                     }
 
-                    // --- VISUAL FITUR 2: PANEL DAFTAR PROGRESS PROSES UNGHAH REAL-TIME ---
                     if (currentUploads.isNotEmpty()) {
                         Card(
                             modifier = Modifier
@@ -736,7 +729,6 @@ fun HomeContent(
                                     )
                                 }
                                 Spacer(Modifier.height(8.dp))
-                                // LazyColumn internal untuk menggulir nama-nama berkas yang sedang berjalan
                                 LazyColumn(
                                     modifier = Modifier.heightIn(max = 130.dp)
                                 ) {
@@ -782,7 +774,7 @@ fun HomeContent(
                         }
                     }
 
-                    if (items.isEmpty()) {
+                    if (driveItems.isEmpty()) {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text(
                                 text = if (searchQuery.isEmpty()) stringResource(R.string.drive_empty) else stringResource(R.string.no_results),
@@ -799,14 +791,14 @@ fun HomeContent(
                                 verticalArrangement = Arrangement.spacedBy(16.dp),
                                 modifier = Modifier.fillMaxSize()
                             ) {
-                                items(items) { item ->
+                                items(driveItems) { item ->
                                     val isSelected = selectedItems.contains(item.id)
                                     DriveGridItem(
                                         item = item,
                                         isSelected = isSelected,
                                         onClick = {
                                             if (isSelectionMode) {
-                                                val hasFiles = items.filter { it.id in selectedItems }.any { it is DriveItem.File }
+                                                val hasFiles = driveItems.filter { it.id in selectedItems }.any { it is DriveItem.File }
                                                 if (hasFiles && item is DriveItem.Folder) {
                                                     Toast.makeText(context, "Cannot select folders when files are selected", Toast.LENGTH_SHORT).show()
                                                 } else {
@@ -845,14 +837,14 @@ fun HomeContent(
                                 contentPadding = PaddingValues(vertical = 8.dp),
                                 modifier = Modifier.fillMaxSize()
                             ) {
-                                items(items) { item ->
+                                items(driveItems) { item ->
                                     val isSelected = selectedItems.contains(item.id)
                                     DriveListItem(
                                         item = item,
                                         isSelected = isSelected,
                                         onClick = {
                                             if (isSelectionMode) {
-                                                val hasFiles = items.filter { it.id in selectedItems }.any { it is DriveItem.File }
+                                                val hasFiles = driveItems.filter { it.id in selectedItems }.any { it is DriveItem.File }
                                                 if (hasFiles && item is DriveItem.Folder) {
                                                     Toast.makeText(context, "Cannot select folders when files are selected", Toast.LENGTH_SHORT).show()
                                                 } else {
@@ -899,7 +891,7 @@ fun HomeContent(
 fun HomePreview() {
     TeledriveTheme {
         HomeContent(
-            items = listOf(
+            driveItems = listOf(
                 DriveItem.Folder(id = 1L, parentChatId = 0L, name = "Documents", telegramChatId = 123456L, isStarred = false),
                 DriveItem.File(id = 2L, parentChatId = 0L, name = "image.jpg", size = 1024 * 1024, mimeType = "image/jpeg", telegramFileId = 1, thumbnailPath = null, localPath = null, isStarred = false)
             ),
@@ -1265,7 +1257,7 @@ fun DriveGridItem(
 }
 
 @Composable
-fun InfoDialog(item: DriveItem, onDismiss = () -> Unit) {
+fun InfoDialog(item: DriveItem, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.item_info)) },
