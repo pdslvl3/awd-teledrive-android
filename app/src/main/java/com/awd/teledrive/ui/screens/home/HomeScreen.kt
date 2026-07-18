@@ -42,8 +42,10 @@ import coil.compose.AsyncImage
 import com.awd.teledrive.R
 import com.awd.teledrive.core.ConnectivityObserver
 import com.awd.teledrive.domain.model.DriveItem
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import com.awd.teledrive.ui.common.FileUiUtils
@@ -78,8 +80,8 @@ fun HomeScreen(
     val duplicateToConfirm by viewModel.duplicateToConfirm.collectAsState()
     val currentUploads by viewModel.currentUploads.collectAsState()
 
-    HomeContent(
-        driveItems = items, // Diarahkan dengan aman ke nama parameter baru
+    HomeScreenContent(
+        driveItems = items,
         totalStorageUsed = totalStorageUsed,
         searchQuery = searchQuery,
         sortOrder = sortOrder,
@@ -118,8 +120,8 @@ fun HomeScreen(
 
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-fun HomeContent(
-    driveItems: List<DriveItem>, // Nama parameter diubah total untuk mematikan error duplikasi
+fun HomeScreenContent(
+    driveItems: List<DriveItem>,
     totalStorageUsed: Long,
     searchQuery: String,
     sortOrder: SortOrder,
@@ -172,25 +174,40 @@ fun HomeContent(
     var newFolderName by remember { mutableStateOf("") }
     var isSearchActive by remember { mutableStateOf(false) }
 
+    // PEMBARUAN UTAMA: Proses copy file dipindah total ke jalur IO (Background) agar layar tidak blank putih
     val multiFilePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetMultipleContents()
     ) { uris ->
-        uris.forEach { uri ->
-            val cursor = context.contentResolver.query(uri, null, null, null, null)
-            val fileName = cursor?.use { c ->
-                val nameIndex = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                c.moveToFirst()
-                c.getString(nameIndex)
-            } ?: "file_${System.currentTimeMillis()}"
+        if (uris.isNotEmpty()) {
+            Toast.makeText(context, "Sedang memproses berkas, mohon tunggu...", Toast.LENGTH_SHORT).show()
+            scope.launch(Dispatchers.IO) {
+                uris.forEach { uri ->
+                    try {
+                        val cursor = context.contentResolver.query(uri, null, null, null, null)
+                        val fileName = cursor?.use { c ->
+                            val nameIndex = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                            c.moveToFirst()
+                            c.getString(nameIndex)
+                        } ?: "file_${System.currentTimeMillis()}"
 
-            val inputStream = context.contentResolver.openInputStream(uri)
-            val tempFile = File(context.cacheDir, fileName)
-            inputStream?.use { input ->
-                FileOutputStream(tempFile).use { output ->
-                    input.copyTo(output)
+                        val inputStream = context.contentResolver.openInputStream(uri)
+                        val tempFile = File(context.cacheDir, fileName)
+                        inputStream?.use { input ->
+                            FileOutputStream(tempFile).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                        
+                        withContext(Dispatchers.Main) {
+                            onUploadFile(tempFile.absolutePath, fileName)
+                        }
+                    } catch (e: Exception) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Gagal memproses berkas raksasa: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                        }
+                    }
                 }
             }
-            onUploadFile(tempFile.absolutePath, fileName)
         }
     }
 
@@ -198,12 +215,22 @@ fun HomeContent(
         contract = ActivityResultContracts.TakePicturePreview()
     ) { bitmap ->
         bitmap?.let {
-            val fileName = "IMG_${System.currentTimeMillis()}.jpg"
-            val file = File(context.cacheDir, fileName)
-            FileOutputStream(file).use { out ->
-                it.compress(android.graphics.Bitmap.CompressFormat.JPEG, 100, out)
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val fileName = "IMG_${System.currentTimeMillis()}.jpg"
+                    val file = File(context.cacheDir, fileName)
+                    FileOutputStream(file).use { out ->
+                        it.compress(android.graphics.Bitmap.CompressFormat.JPEG, 100, out)
+                    }
+                    withContext(Dispatchers.Main) {
+                        onUploadFile(file.absolutePath, fileName)
+                    }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "Gagal memproses foto", Toast.LENGTH_SHORT).show()
+                    }
+                }
             }
-            onUploadFile(file.absolutePath, fileName)
         }
     }
 
@@ -746,7 +773,7 @@ fun HomeContent(
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
                                                 modifier = Modifier.weight(1f)
-                                            )
+                                             )
                                             Spacer(Modifier.width(12.dp))
                                             Surface(
                                                 shape = RoundedCornerShape(8.dp),
@@ -890,7 +917,7 @@ fun HomeContent(
 @Composable
 fun HomePreview() {
     TeledriveTheme {
-        HomeContent(
+        HomeScreenContent(
             driveItems = listOf(
                 DriveItem.Folder(id = 1L, parentChatId = 0L, name = "Documents", telegramChatId = 123456L, isStarred = false),
                 DriveItem.File(id = 2L, parentChatId = 0L, name = "image.jpg", size = 1024 * 1024, mimeType = "image/jpeg", telegramFileId = 1, thumbnailPath = null, localPath = null, isStarred = false)
