@@ -44,6 +44,9 @@ class DriveRepository @Inject constructor(
     private val exportOnComplete = mutableMapOf<String, String>()
     
     private var fetchJob: kotlinx.coroutines.Job? = null
+    
+    // PEREDAM KEJUT NOTIFIKASI: Menghalangi badai render UI massal
+    private var progressUpdateJob: kotlinx.coroutines.Job? = null
 
     private val _currentUploads = MutableStateFlow<List<UploadProgressItem>>(emptyList())
     val currentUploads: Flow<List<UploadProgressItem>> = _currentUploads.asStateFlow()
@@ -86,6 +89,15 @@ class DriveRepository @Inject constructor(
                    Log.e("DriveRepo", "TDLib Download Error for file ${file.id}: Local path = ${file.local.path}")
                 }
             }
+        }
+    }
+
+    // Mengaktifkan sistem peredam kejut jeda 200ms
+    private fun triggerProgressUpdate() {
+        progressUpdateJob?.cancel()
+        progressUpdateJob = scope.launch {
+            delay(200) 
+            updateUploadProgressFlow()
         }
     }
 
@@ -245,7 +257,6 @@ class DriveRepository @Inject constructor(
             }
         }
 
-        // PERBAIKAN TOTAL: Seluruh kata 'return@send' dibuang dan diganti struktur IF/ELSE murni
         if (chatId == savedMessagesChatId && savedMessagesChatId != 0L) {
             telegramClient.send(TdApi.GetChats(TdApi.ChatListMain(), 100)) { result ->
                 if (result is TdApi.Chats) {
@@ -311,7 +322,7 @@ class DriveRepository @Inject constructor(
 
     fun uploadFile(filePath: String, originalFileName: String, chatId: Long? = null) {
         uploadQueue.add(UploadTask(filePath, originalFileName, chatId))
-        updateUploadProgressFlow()
+        triggerProgressUpdate() // MENGGUNAKAN PEREDAM KEJUT BATCH
         processUploadQueue()
     }
 
@@ -334,7 +345,7 @@ class DriveRepository @Inject constructor(
         }
 
         activeTasks.add(task.originalFileName)
-        updateUploadProgressFlow()
+        triggerProgressUpdate() 
 
         startTransferService()
         val content = TdApi.InputMessageDocument(
@@ -351,7 +362,7 @@ class DriveRepository @Inject constructor(
                 }
             }
             activeTasks.remove(task.originalFileName)
-            updateUploadProgressFlow()
+            triggerProgressUpdate() 
             decrementActiveUploads()
             fetchFiles(targetChatId)
         }
