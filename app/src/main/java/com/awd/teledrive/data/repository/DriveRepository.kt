@@ -12,12 +12,8 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import org.drinkless.tdlib.TdApi
@@ -27,7 +23,16 @@ import javax.inject.Singleton
 import android.os.Build
 import com.awd.teledrive.core.MimeTypeHelper
 
-data class UploadProgressItem(val fileName: String, val status: String)
+// --- PERUBAHAN: Data class baru dengan progres lengkap
+data class UploadProgressItem(
+    val fileName: String,
+    val status: String, // "Mengantre", "Mengunggah", "Selesai", "Gagal"
+    val progress: Float = 0f,
+    val downloadedSize: Long = 0,
+    val totalSize: Long = 0,
+    val uniqueId: String = "", // untuk membatalkan
+    val isDownload: Boolean = false
+)
 
 @Singleton
 class DriveRepository @Inject constructor(
@@ -45,11 +50,9 @@ class DriveRepository @Inject constructor(
     
     private var fetchJob: kotlinx.coroutines.Job? = null
     
-    // PEREDAM KEJUT NOTIFIKASI: Menghalangi badai render UI massal
-    private var progressUpdateJob: kotlinx.coroutines.Job? = null
-
+    // --- PERUBAHAN: gunakan StateFlow untuk currentUploads
     private val _currentUploads = MutableStateFlow<List<UploadProgressItem>>(emptyList())
-    val currentUploads: Flow<List<UploadProgressItem>> = _currentUploads.asStateFlow()
+    val currentUploads: StateFlow<List<UploadProgressItem>> = _currentUploads.asStateFlow()
     
     private val activeTasks = java.util.Collections.synchronizedList(mutableListOf<String>())
     private val uploadQueue = java.util.concurrent.ConcurrentLinkedQueue<UploadTask>()
@@ -58,7 +61,7 @@ class DriveRepository @Inject constructor(
 
     data class UploadTask(val filePath: String, val originalFileName: String, val chatId: Long?)
 
-        init {
+    init {
         scope.launch {
             telegramClient.fileUpdates.collect { update ->
                 val file = update.file
@@ -68,13 +71,12 @@ class DriveRepository @Inject constructor(
                 // 1. Bersihkan tugas dari kartu antrean jika proses unggah selesai/gagal
                 if (file.remote.isUploadingCompleted || (!file.remote.isUploadingActive && file.remote.uploadedSize == 0L && activeTasks.isNotEmpty())) {
                     Log.d("DriveRepo", "Upload selesai/berhenti untuk file ID: $fileId")
-                    // Mengambil data task yang tersisa untuk dibersihkan dari antrean visual
                     synchronized(activeTasks) {
                         if (activeTasks.isNotEmpty()) {
-                            // Hapus antrean paling depan yang sudah beres diproses
                             activeTasks.removeAt(0)
                         }
                     }
+                    // --- PERUBAHAN: panggil triggerProgressUpdate untuk refresh
                     triggerProgressUpdate()
                     fetchFiles()
                 }
@@ -107,25 +109,56 @@ class DriveRepository @Inject constructor(
                 }
             }
         }
+
+        // --- PERUBAHAN: Gabungkan data dari TransferRepository dengan antrean
+        scope.launch {
+            transferRepository.transfers.combine(uploadQueueStateFlow()) { transfers, queue ->
+                // Filter transfer yang berupa upload (isDownload = false) dan status aktif
+                val uploadTransfers = transfers.values
+                    .filter { !it.isDownload && (it.status == "Mengunggah" || it.status == "Mengantre" || it.status == "Selesai") }
+                    .map { transfer ->
+                        UploadProgressItem(
+                            fileName = transfer.fileName,
+                            status = transfer.status,
+                            progress = transfer.progress,
+                            downloadedSize = transfer.downloadedSize,
+                            totalSize = transfer.totalSize,
+                            uniqueId = transfer.remoteUniqueId,
+                            isDownload = false
+                        )
+                    }
+                // Tambahkan item antrean yang belum tercatat di transferRepository (misal baru ditambahkan)
+                val queueItems = queue.map { task ->
+                    UploadProgressItem(
+                        fileName = task.originalFileName,
+                        status = "Mengantre",
+                        progress = 0f,
+                        downloadedSize = 0,
+                        totalSize = 0,
+                        uniqueId = "", // belum punya uniqueId
+                        isDownload = false
+                    )
+                }
+                // Gabungkan, urutkan: yang aktif di atas (bisa diurutkan sesuai keinginan)
+                (uploadTransfers + queueItems).distinctBy { it.fileName }
+            }.collect { combined ->
+                _currentUploads.value = combined
+            }
+        }
     }
 
+    // --- PERUBAHAN: StateFlow untuk antrean (agar bisa digabung)
+    private fun uploadQueueStateFlow(): Flow<List<UploadTask>> = flow {
+        while (true) {
+            emit(uploadQueue.toList())
+            delay(500)
+        }
+    }.flowOn(Dispatchers.IO)
 
-    // Mengaktifkan sistem peredam kejut jeda 200ms
+    // --- PERUBAHAN: triggerProgressUpdate tidak perlu debounce lagi, karena combine sudah otomatis
     private fun triggerProgressUpdate() {
-        progressUpdateJob?.cancel()
-        progressUpdateJob = scope.launch {
-            delay(200) 
-            updateUploadProgressFlow()
-        }
-    }
-
-    private fun updateUploadProgressFlow() {
-        val list = mutableListOf<UploadProgressItem>()
-        synchronized(activeTasks) {
-            activeTasks.forEach { list.add(UploadProgressItem(it, "Mengunggah")) }
-        }
-        uploadQueue.forEach { list.add(UploadProgressItem(it.originalFileName, "Mengantre")) }
-        _currentUploads.value = list
+        // Tidak perlu melakukan apa-apa, cukup panggil agar combine terpancing
+        // Tapi kita bisa biarkan kosong
     }
 
     private fun startTransferService() {
@@ -169,21 +202,19 @@ class DriveRepository @Inject constructor(
         }
     }
 
-fun fetchFiles(chatId: Long? = null) {
+    fun fetchFiles(chatId: Long? = null) {
         val targetChatId = chatId ?: savedMessagesChatId
         if (targetChatId == 0L) {
             telegramClient.send(TdApi.GetMe()) { result ->
                 if (result is TdApi.User) {
                     savedMessagesChatId = result.id
                     _savedMessagesChatIdFlow.value = result.id
-                    // Buka koneksi sinkronisasi aktif untuk Room Utama sebelum menarik data
                     telegramClient.send(TdApi.OpenChat(result.id)) {
                         triggerDebouncedFetch(result.id)
                     }
                 }
             }
         } else {
-            // Buka koneksi sinkronisasi aktif untuk Folder Supergroup sebelum menarik data
             telegramClient.send(TdApi.OpenChat(targetChatId)) {
                 triggerDebouncedFetch(targetChatId)
             }
@@ -346,7 +377,6 @@ fun fetchFiles(chatId: Long? = null) {
 
     fun uploadFile(filePath: String, originalFileName: String, chatId: Long? = null) {
         uploadQueue.add(UploadTask(filePath, originalFileName, chatId))
-        triggerProgressUpdate() // MENGGUNAKAN PEREDAM KEJUT BATCH
         processUploadQueue()
     }
 
@@ -369,7 +399,7 @@ fun fetchFiles(chatId: Long? = null) {
         }
 
         activeTasks.add(task.originalFileName)
-        triggerProgressUpdate() 
+        triggerProgressUpdate()
 
         startTransferService()
         val content = TdApi.InputMessageDocument(
@@ -386,7 +416,7 @@ fun fetchFiles(chatId: Long? = null) {
                 }
             }
             activeTasks.remove(task.originalFileName)
-            triggerProgressUpdate() 
+            triggerProgressUpdate()
             decrementActiveUploads()
             fetchFiles(targetChatId)
         }
@@ -395,6 +425,14 @@ fun fetchFiles(chatId: Long? = null) {
     private fun decrementActiveUploads() {
         synchronized(this@DriveRepository) { activeUploads-- }
         processUploadQueue()
+    }
+
+    // --- PERUBAHAN: fungsi untuk membatalkan upload dari luar
+    fun cancelUpload(uniqueId: String) {
+        transferRepository.cancelTransfer(uniqueId)
+        // Hapus dari antrean jika belum dimulai (berdasarkan nama? tidak ada uniqueId)
+        // Untuk antrean, kita bisa cari berdasarkan nama file yang mungkin cocok.
+        // Tapi karena antrean tidak punya uniqueId, kita hanya batalkan yang sudah ada di transferRepository.
     }
 
     fun getSavedMessagesChatId(): Long = savedMessagesChatId
