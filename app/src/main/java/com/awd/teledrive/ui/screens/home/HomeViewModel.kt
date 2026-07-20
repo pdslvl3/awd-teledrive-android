@@ -62,8 +62,8 @@ class HomeViewModel @Inject constructor(
         .map { it.firstOrNull() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
+    // --- PERUBAHAN: currentUploads sekarang menggunakan tipe UploadProgressItem dari DriveRepository
     val currentUploads: StateFlow<List<UploadProgressItem>> = driveRepository.currentUploads
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val totalStorageUsed: StateFlow<Long> = driveRepository.getTotalStorageUsed()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
@@ -145,7 +145,6 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    // PERBAIKAN UTAMA: Memindahkan looping pencocokan data ke Dispatchers.Default (Background Thread)
     fun uploadFile(filePath: String, fileName: String) {
         viewModelScope.launch(Dispatchers.Default) {
             val hasDuplicate = items.value.any { it is DriveItem.File && it.name.equals(fileName, ignoreCase = true) }
@@ -176,6 +175,11 @@ class HomeViewModel @Inject constructor(
                 if (currentList.isNotEmpty()) currentList.drop(1) else emptyList()
             }
         }
+    }
+
+    // --- PERUBAHAN: fungsi cancelUpload
+    fun cancelUpload(uniqueId: String) {
+        driveRepository.cancelUpload(uniqueId)
     }
 
     fun downloadFile(messageId: Long, chatId: Long, fileName: String) {
