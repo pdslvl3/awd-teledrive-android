@@ -379,9 +379,9 @@ class DriveRepository @Inject constructor(
 
         startTransferService()
         val content = TdApi.InputMessageDocument(
-            TdApi.InputFileLocal(task.filePath), null, false, TdApi.FormattedText(task.originalFileName, emptyArray())
+            TdApi.InputFileLocal(task.filePath), null, false, TdApi.FormattedText(task.originalFileName, arrayOf())
         )
-        telegramClient.send(TdApi.SendMessage(targetChatId, null, null, null, null, content)) { result ->
+        telegramClient.send(TdApi.SendMessage(targetChatId, 0L, null, null, null, content)) { result ->
             if (result is TdApi.Message) {
                 val msgContent = result.content
                 if (msgContent is TdApi.MessageDocument) {
@@ -578,8 +578,8 @@ class DriveRepository @Inject constructor(
             if (result is TdApi.Messages) {
                 val messageIds = result.messages.map { it.id }.toLongArray()
                 if (messageIds.isNotEmpty()) {
-                    val options = TdApi.MessageSendOptions().apply { disableNotification = true; fromBackground = true }
-                    telegramClient.send(TdApi.ForwardMessages(toChatId, null, fromFolderChatId, messageIds, options, false, false)) { forwardResult ->
+                    val options = TdApi.MessageSendOptions().apply { disableNotification = true }
+                    telegramClient.send(TdApi.ForwardMessages(toChatId, 0L, fromFolderChatId, messageIds, options, false, false)) { forwardResult ->
                         if (forwardResult is TdApi.Messages) {
                             telegramClient.send(TdApi.DeleteChat(fromFolderChatId)) {
                                 scope.launch {
@@ -603,8 +603,8 @@ class DriveRepository @Inject constructor(
     }
 
     fun moveItems(fromChatId: Long, toChatId: Long, messageIds: List<Long>) {
-        val options = TdApi.MessageSendOptions().apply { disableNotification = true; fromBackground = true }
-        telegramClient.send(TdApi.ForwardMessages(toChatId, null, fromChatId, messageIds.toLongArray(), options, false, false)) { result ->
+        val options = TdApi.MessageSendOptions().apply { disableNotification = true }
+        telegramClient.send(TdApi.ForwardMessages(toChatId, 0L, fromChatId, messageIds.toLongArray(), options, false, false)) { result ->
             if (result is TdApi.Messages) {
                 val successfulOriginalIds = mutableListOf<Long>()
                 result.messages.forEachIndexed { index, message ->
