@@ -176,40 +176,43 @@ fun HomeScreenContent(
     var isSearchActive by remember { mutableStateOf(false) }
 
     // Picker file
-    val multiFilePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetMultipleContents()
-    ) { uris ->
-        if (uris.isNotEmpty()) {
-            Toast.makeText(context, "Sedang memproses berkas, mohon tunggu...", Toast.LENGTH_SHORT).show()
-            scope.launch(Dispatchers.IO) {
-                uris.forEach { uri ->
-                    try {
-                        val cursor = context.contentResolver.query(uri, null, null, null, null)
-                        val fileName = cursor?.use { c ->
-                            val nameIndex = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                            c.moveToFirst()
-                            c.getString(nameIndex)
-                        } ?: "file_${System.currentTimeMillis()}"
+val multiFilePickerLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.GetMultipleContents()
+) { uris ->
+    if (uris.isNotEmpty()) {
+        Toast.makeText(context, "Memproses ${uris.size} berkas...", Toast.LENGTH_SHORT).show()
+        
+        scope.launch(Dispatchers.IO) {
+            uris.forEach { uri ->
+                try {
+                    val cursor = context.contentResolver.query(uri, null, null, null, null)
+                    val fileName = cursor?.use { c ->
+                        val nameIndex = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        c.moveToFirst()
+                        c.getString(nameIndex)
+                    } ?: "file_${System.currentTimeMillis()}"
 
-                        val inputStream = context.contentResolver.openInputStream(uri)
-                        val tempFile = File(context.cacheDir, fileName)
-                        inputStream?.use { input ->
-                            FileOutputStream(tempFile).use { output ->
-                                input.copyTo(output)
-                            }
+                    val inputStream = context.contentResolver.openInputStream(uri)
+                    val tempFile = File(context.cacheDir, fileName)
+                    inputStream?.use { input ->
+                        FileOutputStream(tempFile).use { output ->
+                            input.copyTo(output)
                         }
-                        withContext(Dispatchers.Main) {
-                            onUploadFile(tempFile.absolutePath, fileName)
-                        }
-                    } catch (e: Exception) {
-                        withContext(Dispatchers.Main) {
-                            Toast.makeText(context, "Gagal memproses berkas: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
-                        }
+                    }
+                    
+                    // Panggil upload segera setelah 1 file selesai disalin
+                    withContext(Dispatchers.Main) {
+                        onUploadFile(tempFile.absolutePath, fileName)
+                    }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "Gagal memproses berkas: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
                     }
                 }
             }
         }
     }
+}
 
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicturePreview()
