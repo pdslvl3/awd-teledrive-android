@@ -206,7 +206,8 @@ class DriveRepository @Inject constructor(
     }
 
     private fun loadAllDriveItems(chatId: Long) {
-        telegramClient.send(TdApi.GetChatHistory(chatId, 0, 0, 1000, false)) { result ->
+        // PERBAIKAN: Parameter kedua diisi null, bukan 0 (karena tipe TdApi.MessageTopic!)
+        telegramClient.send(TdApi.GetChatHistory(chatId, null, 0, 1000, false)) { result ->
             if (result is TdApi.Messages) {
                 val entities = result.messages.mapNotNull { message ->
                     if (message.sendingState != null) return@mapNotNull null
@@ -379,9 +380,9 @@ class DriveRepository @Inject constructor(
 
         startTransferService()
         val content = TdApi.InputMessageDocument(
-            TdApi.InputFileLocal(task.filePath), null, false, TdApi.FormattedText(task.originalFileName, arrayOf())
+            TdApi.InputFileLocal(task.filePath), null, false, TdApi.FormattedText(task.originalFileName, emptyArray())
         )
-        telegramClient.send(TdApi.SendMessage(targetChatId, 0L, null, null, null, content)) { result ->
+        telegramClient.send(TdApi.SendMessage(targetChatId, null, null, null, null, content)) { result ->
             if (result is TdApi.Message) {
                 val msgContent = result.content
                 if (msgContent is TdApi.MessageDocument) {
@@ -556,7 +557,8 @@ class DriveRepository @Inject constructor(
     }
 
     fun downloadFolderContents(folderChatId: Long) {
-        telegramClient.send(TdApi.GetChatHistory(folderChatId, 0, 0, 1000, false)) { result ->
+        // PERBAIKAN: Parameter kedua diisi null, bukan 0
+        telegramClient.send(TdApi.GetChatHistory(folderChatId, null, 0, 1000, false)) { result ->
             if (result is TdApi.Messages) {
                 result.messages.forEach { message ->
                     val fileInfo = when (val content = message.content) {
@@ -574,12 +576,13 @@ class DriveRepository @Inject constructor(
     }
 
     fun moveFolderContentsAndDelete(fromFolderChatId: Long, toChatId: Long) {
-        telegramClient.send(TdApi.GetChatHistory(fromFolderChatId, 0, 0, 1000, false)) { result ->
+        // PERBAIKAN: Parameter kedua diisi null, bukan 0
+        telegramClient.send(TdApi.GetChatHistory(fromFolderChatId, null, 0, 1000, false)) { result ->
             if (result is TdApi.Messages) {
                 val messageIds = result.messages.map { it.id }.toLongArray()
                 if (messageIds.isNotEmpty()) {
-                    val options = TdApi.MessageSendOptions().apply { disableNotification = true }
-                    telegramClient.send(TdApi.ForwardMessages(toChatId, 0L, fromFolderChatId, messageIds, options, false, false)) { forwardResult ->
+                    val options = TdApi.MessageSendOptions().apply { disableNotification = true; fromBackground = true }
+                    telegramClient.send(TdApi.ForwardMessages(toChatId, null, fromFolderChatId, messageIds, options, false, false)) { forwardResult ->
                         if (forwardResult is TdApi.Messages) {
                             telegramClient.send(TdApi.DeleteChat(fromFolderChatId)) {
                                 scope.launch {
@@ -603,8 +606,8 @@ class DriveRepository @Inject constructor(
     }
 
     fun moveItems(fromChatId: Long, toChatId: Long, messageIds: List<Long>) {
-        val options = TdApi.MessageSendOptions().apply { disableNotification = true }
-        telegramClient.send(TdApi.ForwardMessages(toChatId, 0L, fromChatId, messageIds.toLongArray(), options, false, false)) { result ->
+        val options = TdApi.MessageSendOptions().apply { disableNotification = true; fromBackground = true }
+        telegramClient.send(TdApi.ForwardMessages(toChatId, null, fromChatId, messageIds.toLongArray(), options, false, false)) { result ->
             if (result is TdApi.Messages) {
                 val successfulOriginalIds = mutableListOf<Long>()
                 result.messages.forEachIndexed { index, message ->
