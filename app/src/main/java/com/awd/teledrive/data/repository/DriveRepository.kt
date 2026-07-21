@@ -115,7 +115,7 @@ class DriveRepository @Inject constructor(
             transferRepository.transfers.combine(uploadQueueStateFlow()) { transfers, queue ->
                 // Filter transfer yang berupa upload (isDownload = false) dan status aktif
                 val uploadTransfers = transfers.values
-                    .filter { !it.isDownload && (it.status == "Mengunggah" || it.status == "Mengantre" || it.status == "Selesai") }
+                    .filter { !it.isDownload && (it.status == "Mengunggah" || it.status == "Mengantre") }
                     .map { transfer ->
                         UploadProgressItem(
                             fileName = transfer.fileName,
@@ -379,48 +379,56 @@ class DriveRepository @Inject constructor(
         uploadQueue.add(UploadTask(filePath, originalFileName, chatId))
         processUploadQueue()
     }
-
-    private fun processUploadQueue() {
-        scope.launch {
-            synchronized(this@DriveRepository) {
-                if (activeUploads >= MAX_CONCURRENT_UPLOADS || uploadQueue.isEmpty()) return@launch
-                activeUploads++
-            }
-            val task = uploadQueue.poll() ?: return@launch
-            executeActualUpload(task)
+private fun processUploadQueue() {
+    scope.launch {
+        synchronized(this@DriveRepository) {
+            if (activeUploads >= MAX_CONCURRENT_UPLOADS || uploadQueue.isEmpty()) return@launch
+            activeUploads++
         }
+        // Gunakan peek() atau hindari penghapusan premature sampai registrasi transfer selesai
+        val task = uploadQueue.peek() ?: run {
+            decrementActiveUploads()
+            return@launch
+        }
+        executeActualUpload(task)
+    }
+}
+
+private fun executeActualUpload(task: UploadTask) {
+    val targetChatId = task.chatId ?: savedMessagesChatId
+    if (targetChatId == 0L) {
+        uploadQueue.poll() // Hapus jika gagal
+        decrementActiveUploads()
+        return
     }
 
-    private fun executeActualUpload(task: UploadTask) {
-        val targetChatId = task.chatId ?: savedMessagesChatId
-        if (targetChatId == 0L) {
-            decrementActiveUploads()
-            return
-        }
+    activeTasks.add(task.originalFileName)
+    triggerProgressUpdate()
 
-        activeTasks.add(task.originalFileName)
+    startTransferService()
+    val content = TdApi.InputMessageDocument(
+        TdApi.InputFileLocal(task.filePath), null, false, TdApi.FormattedText(task.originalFileName, emptyArray())
+    )
+    
+    telegramClient.send(TdApi.SendMessage(targetChatId, null, null, null, null, content)) { result ->
+        if (result is TdApi.Message) {
+            val msgContent = result.content
+            if (msgContent is TdApi.MessageDocument) {
+                val doc = msgContent.document.document
+                transferRepository.addTransfer(
+                    doc.id, doc.remote.uniqueId, task.originalFileName, isDownload = false, totalSize = doc.expectedSize
+                )
+            }
+        }
+        
+        // Baru keluarkan dari antrean setelah diproses
+        uploadQueue.remove(task)
+        activeTasks.remove(task.originalFileName)
         triggerProgressUpdate()
-
-        startTransferService()
-        val content = TdApi.InputMessageDocument(
-            TdApi.InputFileLocal(task.filePath), null, false, TdApi.FormattedText(task.originalFileName, emptyArray())
-        )
-        telegramClient.send(TdApi.SendMessage(targetChatId, null, null, null, null, content)) { result ->
-            if (result is TdApi.Message) {
-                val msgContent = result.content
-                if (msgContent is TdApi.MessageDocument) {
-                    val doc = msgContent.document.document
-                    transferRepository.addTransfer(
-                        doc.id, doc.remote.uniqueId, task.originalFileName, isDownload = false, totalSize = doc.expectedSize
-                    )
-                }
-            }
-            activeTasks.remove(task.originalFileName)
-            triggerProgressUpdate()
-            decrementActiveUploads()
-            fetchFiles(targetChatId)
-        }
+        decrementActiveUploads()
+        fetchFiles(targetChatId)
     }
+}
 
     private fun decrementActiveUploads() {
         synchronized(this@DriveRepository) { activeUploads-- }
