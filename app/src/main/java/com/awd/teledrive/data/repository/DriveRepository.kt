@@ -19,7 +19,7 @@ import javax.inject.Singleton
 
 data class UploadProgressItem(
     val fileName: String,
-    val status: String, 
+    val status: String,
     val progress: Float = 0f,
     val downloadedSize: Long = 0,
     val totalSize: Long = 0,
@@ -45,8 +45,7 @@ class DriveRepository @Inject constructor(
     private val _currentUploads = MutableStateFlow<List<UploadProgressItem>>(emptyList())
     val currentUploads: StateFlow<List<UploadProgressItem>> = _currentUploads.asStateFlow()
 
-    // Gunakan Map agar unik berdasarkan ID File Telegram, bukan nama
-    private val activeTasks = java.util.concurrent.ConcurrentHashMap<String, Long>() // Key: fileName, Value: fileId
+    private val activeTasks = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val uploadQueue = java.util.concurrent.ConcurrentLinkedQueue<UploadTask>()
     private var activeUploads = 0
     private val MAX_CONCURRENT_UPLOADS = 2
@@ -60,11 +59,9 @@ class DriveRepository @Inject constructor(
                 val uniqueId = file.remote.uniqueId
                 val fileId = file.id
 
-                // --- PERBAIKAN 1: Hapus task berdasarkan file.id, bukan indeks ke-0 ---
                 if (file.remote.isUploadingCompleted || (!file.remote.isUploadingActive && file.remote.uploadedSize == 0L)) {
                     Log.d("DriveRepo", "Upload selesai/berhenti untuk file ID: $fileId")
                     
-                    // Cari nama file yang sesuai dengan fileId ini, lalu hapus dari activeTasks
                     val fileNameToRemove = activeTasks.entries.find { it.value == fileId }?.key
                     if (fileNameToRemove != null) {
                         activeTasks.remove(fileNameToRemove)
@@ -96,7 +93,6 @@ class DriveRepository @Inject constructor(
             }
         }
 
-        // --- PERBAIKAN 2: Gabungkan data tanpa distinctBy agar semua file muncul ---
         scope.launch {
             transferRepository.transfers.combine(uploadQueueStateFlow()) { transfers, queue ->
                 val uploadTransfers = transfers.values
@@ -125,10 +121,7 @@ class DriveRepository @Inject constructor(
                     )
                 }
                 
-                // PERBAIKAN: Hapus distinctBy! Biarkan semua item muncul
                 val combined = uploadTransfers + queueItems
-                
-                // Opsional: Urutkan agar yang aktif di atas (Mengunggah > Mengantre > Selesai)
                 combined.sortedByDescending { 
                     when(it.status) {
                         "Mengunggah" -> 3
@@ -150,9 +143,7 @@ class DriveRepository @Inject constructor(
         }
     }.flowOn(Dispatchers.IO)
 
-    private fun triggerProgressUpdate() {
-        // Tidak perlu melakukan debounce lagi, karena flow combine sudah menanganinya
-    }
+    private fun triggerProgressUpdate() { }
 
     private fun startTransferService() {
         val intent = Intent(context, TransferService::class.java)
@@ -215,8 +206,143 @@ class DriveRepository @Inject constructor(
     }
 
     private fun loadAllDriveItems(chatId: Long) {
-        // (Kode loadAllDriveItems tetap sama seperti aslinya, tidak diubah)
-        // ... (potong untuk menghemat tempat, tetap gunakan kode Anda yang sudah ada)
+        telegramClient.send(TdApi.GetChatHistory(chatId, 0, 0, 1000, false)) { result ->
+            if (result is TdApi.Messages) {
+                val entities = result.messages.mapNotNull { message ->
+                    if (message.sendingState != null) return@mapNotNull null
+                    when (val content = message.content) {
+                        is TdApi.MessageDocument -> {
+                            val thumb = content.document.thumbnail
+                            if (thumb != null && (thumb.file.local.path.isEmpty())) {
+                                telegramClient.send(TdApi.DownloadFile(thumb.file.id, 1, 0, 0, false))
+                            }
+                            val docFile = content.document.document
+                            val resolvedMimeType = MimeTypeHelper.resolveMimeType(content.document.fileName, content.document.mimeType)
+                            DriveItemEntity(
+                                id = message.id, name = content.document.fileName, size = docFile.expectedSize, mimeType = resolvedMimeType,
+                                telegramFileId = docFile.id, parentChatId = chatId, isFolder = false,
+                                thumbnailPath = when {
+                                    thumb?.file?.local?.path?.isNotEmpty() == true -> thumb.file.local.path
+                                    resolvedMimeType.startsWith("image/") && docFile.local.path.isNotEmpty() -> docFile.local.path
+                                    else -> null
+                                },
+                                localPath = docFile.local.path.takeIf { it.isNotEmpty() }, isStarred = false, thumbnailFileId = thumb?.file?.id,
+                                remoteUniqueId = docFile.remote.uniqueId, thumbnailRemoteUniqueId = thumb?.file?.remote?.uniqueId, createdAt = message.date.toLong() * 1000
+                            )
+                        }
+                        is TdApi.MessagePhoto -> {
+                            val photo = content.photo.sizes.lastOrNull()
+                            val thumb = if (content.photo.sizes.size > 1) content.photo.sizes.firstOrNull() else null
+                            if (thumb != null && thumb.photo.local.path.isEmpty()) {
+                                telegramClient.send(TdApi.DownloadFile(thumb.photo.id, 1, 0, 0, false))
+                            }
+                            val photoFile = photo?.photo
+                            DriveItemEntity(
+                                id = message.id, name = "Photo_${message.id}.jpg", size = photoFile?.expectedSize ?: 0L, mimeType = "image/jpeg",
+                                telegramFileId = photoFile?.id ?: 0, parentChatId = chatId, isFolder = false,
+                                thumbnailPath = thumb?.photo?.local?.path?.takeIf { it.isNotEmpty() } ?: photoFile?.local?.path?.takeIf { it.isNotEmpty() },
+                                localPath = photoFile?.local?.path?.takeIf { it.isNotEmpty() }, isStarred = false, thumbnailFileId = thumb?.photo?.id,
+                                remoteUniqueId = photoFile?.remote?.uniqueId, thumbnailRemoteUniqueId = thumb?.photo?.remote?.uniqueId, createdAt = message.date.toLong() * 1000
+                            )
+                        }
+                        is TdApi.MessageVideo -> {
+                            val thumb = content.video.thumbnail
+                            if (thumb != null && thumb.file.local.path.isEmpty()) {
+                                telegramClient.send(TdApi.DownloadFile(thumb.file.id, 1, 0, 0, false))
+                            }
+                            val videoFile = content.video.video
+                            val resolvedMimeType = MimeTypeHelper.resolveMimeType(content.video.fileName, content.video.mimeType)
+                            DriveItemEntity(
+                                id = message.id, name = content.video.fileName, size = videoFile.expectedSize, mimeType = resolvedMimeType,
+                                telegramFileId = videoFile.id, parentChatId = chatId, isFolder = false, thumbnailPath = thumb?.file?.local?.path?.takeIf { it.isNotEmpty() },
+                                localPath = videoFile.local.path.takeIf { it.isNotEmpty() }, isStarred = false, thumbnailFileId = thumb?.file?.id,
+                                remoteUniqueId = videoFile.remote.uniqueId, thumbnailRemoteUniqueId = thumb?.file?.remote?.uniqueId, createdAt = message.date.toLong() * 1000
+                            )
+                        }
+                        is TdApi.MessageAudio -> {
+                            val audioFile = content.audio.audio
+                            val fileName = content.audio.fileName.ifEmpty { "Audio_${message.id}.mp3" }
+                            DriveItemEntity(
+                                id = message.id, name = fileName, size = audioFile.expectedSize, mimeType = MimeTypeHelper.resolveMimeType(fileName, content.audio.mimeType),
+                                telegramFileId = audioFile.id, parentChatId = chatId, isFolder = false, localPath = audioFile.local.path.takeIf { it.isNotEmpty() },
+                                isStarred = false, remoteUniqueId = audioFile.remote.uniqueId, createdAt = message.date.toLong() * 1000
+                            )
+                        }
+                        is TdApi.MessageAnimation -> {
+                            val animFile = content.animation.animation
+                            val resolvedMimeType = MimeTypeHelper.resolveMimeType(content.animation.fileName, content.animation.mimeType)
+                            DriveItemEntity(
+                                id = message.id, name = content.animation.fileName.ifEmpty { "VideoShort_${message.id}.mp4" }, size = animFile.expectedSize, mimeType = resolvedMimeType,
+                                telegramFileId = animFile.id, parentChatId = chatId, isFolder = false, thumbnailPath = content.animation.thumbnail?.file?.local?.path?.takeIf { it.isNotEmpty() },
+                                localPath = animFile.local.path.takeIf { it.isNotEmpty() }, isStarred = false, thumbnailFileId = content.animation.thumbnail?.file?.id,
+                                remoteUniqueId = animFile.remote.uniqueId, thumbnailRemoteUniqueId = content.animation.thumbnail?.file?.remote?.uniqueId, createdAt = message.date.toLong() * 1000
+                            )
+                        }
+                        else -> null
+                    }
+                }
+                scope.launch {
+                    driveDao.deletePendingItems()
+                    driveDao.refreshChatItems(chatId, entities)
+                }
+            }
+        }
+
+        if (chatId == savedMessagesChatId && savedMessagesChatId != 0L) {
+            telegramClient.send(TdApi.GetChats(TdApi.ChatListMain(), 100)) { result ->
+                if (result is TdApi.Chats) {
+                    val folderEntities = java.util.Collections.synchronizedList(mutableListOf<DriveItemEntity>())
+                    val totalChats = result.chatIds.size
+                    if (totalChats > 0) {
+                        val processedCount = java.util.concurrent.atomic.AtomicInteger(0)
+                        result.chatIds.forEach { cid ->
+                            telegramClient.send(TdApi.GetChat(cid)) { chatResult ->
+                                if (chatResult is TdApi.Chat) {
+                                    val type = chatResult.type
+                                    if (type is TdApi.ChatTypeSupergroup && type.isChannel && cid != savedMessagesChatId) {
+                                        telegramClient.send(TdApi.GetSupergroup(type.supergroupId)) { sgResult ->
+                                            if (sgResult is TdApi.Supergroup) {
+                                                val status = sgResult.status
+                                                if (status is TdApi.ChatMemberStatusCreator || status is TdApi.ChatMemberStatusAdministrator) {
+                                                    scope.launch {
+                                                        val existing = driveDao.getItemById(chatResult.id, savedMessagesChatId)
+                                                        folderEntities.add(
+                                                            DriveItemEntity(
+                                                                id = chatResult.id, name = chatResult.title, size = 0, mimeType = "folder",
+                                                                telegramFileId = 0, parentChatId = savedMessagesChatId, isFolder = true, isStarred = existing?.isStarred ?: false
+                                                            )
+                                                        )
+                                                        if (processedCount.incrementAndGet() == totalChats) {
+                                                            driveDao.insertItems(folderEntities)
+                                                        }
+                                                    }
+                                                } else {
+                                                    if (processedCount.incrementAndGet() == totalChats) {
+                                                        scope.launch { driveDao.insertItems(folderEntities) }
+                                                    }
+                                                }
+                                            } else {
+                                                if (processedCount.incrementAndGet() == totalChats) {
+                                                    scope.launch { driveDao.insertItems(folderEntities) }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        if (processedCount.incrementAndGet() == totalChats) {
+                                            scope.launch { driveDao.insertItems(folderEntities) }
+                                        }
+                                    }
+                                } else {
+                                    if (processedCount.incrementAndGet() == totalChats) {
+                                        scope.launch { driveDao.insertItems(folderEntities) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fun createFolder(name: String) {
@@ -248,8 +374,7 @@ class DriveRepository @Inject constructor(
             return
         }
 
-        // Simpan task dengan kunci nama file, nilai akan diisi saat upload benar-benar dimulai
-        activeTasks[task.originalFileName] = -1L // placeholder
+        activeTasks[task.originalFileName] = -1L
         triggerProgressUpdate()
 
         startTransferService()
@@ -261,14 +386,12 @@ class DriveRepository @Inject constructor(
                 val msgContent = result.content
                 if (msgContent is TdApi.MessageDocument) {
                     val doc = msgContent.document.document
-                    // Simpan file ID yang sebenarnya agar bisa dihapus saat selesai
                     activeTasks[task.originalFileName] = doc.id
                     transferRepository.addTransfer(
                         doc.id, doc.remote.uniqueId, task.originalFileName, isDownload = false, totalSize = doc.expectedSize
                     )
                 }
             }
-            // Jangan hapus activeTasks di sini! Tunggu sampai UpdateFile dari Telegram mengatakan selesai.
             decrementActiveUploads()
             fetchFiles(targetChatId)
         }
@@ -356,11 +479,11 @@ class DriveRepository @Inject constructor(
     fun getTotalStorageUsed(): Flow<Long> = driveDao.getTotalSize().map { it ?: 0L }
 
     fun getInternalCacheSize(): Flow<Long> {
-        return kotlinx.coroutines.flow.flow {
+        return flow {
             while (true) {
                 val size = calculateDirectorySize(context.filesDir)
                 emit(size)
-                kotlinx.coroutines.delay(10000)
+                delay(10000)
             }
         }.flowOn(Dispatchers.IO)
     }
