@@ -35,27 +35,26 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.awd.teledrive.R
 import com.awd.teledrive.core.ConnectivityObserver
+import com.awd.teledrive.data.repository.UploadProgressItem
 import com.awd.teledrive.domain.model.DriveItem
+import com.awd.teledrive.ui.common.FileUiUtils
+import com.awd.teledrive.ui.theme.TeledriveTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
-import com.awd.teledrive.ui.common.FileUiUtils
 import java.util.Locale
 import kotlin.math.log10
 import kotlin.math.pow
 import kotlin.time.Duration.Companion.seconds
-
-import androidx.compose.ui.tooling.preview.Preview
-import com.awd.teledrive.ui.theme.TeledriveTheme
-import com.awd.teledrive.data.repository.UploadProgressItem
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -175,44 +174,44 @@ fun HomeScreenContent(
     var newFolderName by remember { mutableStateOf("") }
     var isSearchActive by remember { mutableStateOf(false) }
 
-    // Picker file
-val multiFilePickerLauncher = rememberLauncherForActivityResult(
-    contract = ActivityResultContracts.GetMultipleContents()
-) { uris ->
-    if (uris.isNotEmpty()) {
-        Toast.makeText(context, "Memproses ${uris.size} berkas...", Toast.LENGTH_SHORT).show()
-        
-        scope.launch(Dispatchers.IO) {
-            uris.forEach { uri ->
-                try {
-                    val cursor = context.contentResolver.query(uri, null, null, null, null)
-                    val fileName = cursor?.use { c ->
-                        val nameIndex = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                        c.moveToFirst()
-                        c.getString(nameIndex)
-                    } ?: "file_${System.currentTimeMillis()}"
+    // PERBAIKAN MULTI-FILE PICKER: Setiap file diproses dalam Coroutine independen agar langsung masuk antrean UI
+    val multiFilePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            Toast.makeText(context, "Menambahkan ${uris.size} berkas ke antrean...", Toast.LENGTH_SHORT).show()
+            
+            scope.launch(Dispatchers.IO) {
+                uris.forEach { uri ->
+                    launch {
+                        try {
+                            val cursor = context.contentResolver.query(uri, null, null, null, null)
+                            val fileName = cursor?.use { c ->
+                                val nameIndex = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                                c.moveToFirst()
+                                c.getString(nameIndex)
+                            } ?: "file_${System.currentTimeMillis()}"
 
-                    val inputStream = context.contentResolver.openInputStream(uri)
-                    val tempFile = File(context.cacheDir, fileName)
-                    inputStream?.use { input ->
-                        FileOutputStream(tempFile).use { output ->
-                            input.copyTo(output)
+                            val tempFile = File(context.cacheDir, fileName)
+                            context.contentResolver.openInputStream(uri)?.use { input ->
+                                FileOutputStream(tempFile).use { output ->
+                                    input.copyTo(output)
+                                }
+                            }
+                            
+                            withContext(Dispatchers.Main) {
+                                onUploadFile(tempFile.absolutePath, fileName)
+                            }
+                        } catch (e: Exception) {
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, "Gagal memproses berkas: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                            }
                         }
-                    }
-                    
-                    // Panggil upload segera setelah 1 file selesai disalin
-                    withContext(Dispatchers.Main) {
-                        onUploadFile(tempFile.absolutePath, fileName)
-                    }
-                } catch (e: Exception) {
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(context, "Gagal memproses berkas: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
                     }
                 }
             }
         }
     }
-}
 
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicturePreview()
@@ -261,7 +260,6 @@ val multiFilePickerLauncher = rememberLauncherForActivityResult(
         }
     }
 
-    // Dialog duplicate
     if (duplicateToConfirm != null) {
         AlertDialog(
             onDismissRequest = { onConfirmSkip() },
