@@ -59,7 +59,8 @@ class DriveRepository @Inject constructor(
                 val uniqueId = file.remote.uniqueId
                 val fileId = file.id
 
-                if (file.remote.isUploadingCompleted || (!file.remote.isUploadingActive && file.remote.uploadedSize == 0L)) {
+                // PERBAIKAN BARIS 65: 0L diganti menjadi 0 agar cocok dengan Int
+                if (file.remote.isUploadingCompleted || (!file.remote.isUploadingActive && file.remote.uploadedSize == 0)) {
                     Log.d("DriveRepo", "Upload selesai/berhenti untuk file ID: $fileId")
                     
                     val fileNameToRemove = activeTasks.entries.find { it.value == fileId }?.key
@@ -206,8 +207,8 @@ class DriveRepository @Inject constructor(
     }
 
     private fun loadAllDriveItems(chatId: Long) {
-        // PERBAIKAN: Gunakan 0L (Long) secara eksplisit untuk menghindari Int
-        telegramClient.send(TdApi.GetChatHistory(chatId, 0L, 0L, 1000, false)) { result ->
+        // PERBAIKAN BARIS 210: 0L diganti menjadi 0
+        telegramClient.send(TdApi.GetChatHistory(chatId, 0, 0, 1000, false)) { result ->
             if (result is TdApi.Messages) {
                 val entities = result.messages.mapNotNull { message ->
                     if (message.sendingState != null) return@mapNotNull null
@@ -557,8 +558,8 @@ class DriveRepository @Inject constructor(
     }
 
     fun downloadFolderContents(folderChatId: Long) {
-        // PERBAIKAN: Gunakan 0L (Long) secara eksplisit
-        telegramClient.send(TdApi.GetChatHistory(folderChatId, 0L, 0L, 1000, false)) { result ->
+        // PERBAIKAN BARIS 561: 0L diganti menjadi 0
+        telegramClient.send(TdApi.GetChatHistory(folderChatId, 0, 0, 1000, false)) { result ->
             if (result is TdApi.Messages) {
                 result.messages.forEach { message ->
                     val fileInfo = when (val content = message.content) {
@@ -576,8 +577,8 @@ class DriveRepository @Inject constructor(
     }
 
     fun moveFolderContentsAndDelete(fromFolderChatId: Long, toChatId: Long) {
-        // PERBAIKAN: Gunakan 0L (Long) secara eksplisit
-        telegramClient.send(TdApi.GetChatHistory(fromFolderChatId, 0L, 0L, 1000, false)) { result ->
+        // PERBAIKAN BARIS 580: 0L diganti menjadi 0
+        telegramClient.send(TdApi.GetChatHistory(fromFolderChatId, 0, 0, 1000, false)) { result ->
             if (result is TdApi.Messages) {
                 val messageIds = result.messages.map { it.id }.toLongArray()
                 if (messageIds.isNotEmpty()) {
