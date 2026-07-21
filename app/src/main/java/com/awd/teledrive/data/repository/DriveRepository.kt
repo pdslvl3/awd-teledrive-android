@@ -206,7 +206,7 @@ class DriveRepository @Inject constructor(
     }
 
     private fun loadAllDriveItems(chatId: Long) {
-        // PERBAIKAN: Ganti null menjadi 0L (Long)
+        // PERBAIKAN: Gunakan 0L (Long) secara eksplisit untuk menghindari Int
         telegramClient.send(TdApi.GetChatHistory(chatId, 0L, 0L, 1000, false)) { result ->
             if (result is TdApi.Messages) {
                 val entities = result.messages.mapNotNull { message ->
@@ -557,7 +557,7 @@ class DriveRepository @Inject constructor(
     }
 
     fun downloadFolderContents(folderChatId: Long) {
-        // PERBAIKAN: Ganti null menjadi 0L (Long)
+        // PERBAIKAN: Gunakan 0L (Long) secara eksplisit
         telegramClient.send(TdApi.GetChatHistory(folderChatId, 0L, 0L, 1000, false)) { result ->
             if (result is TdApi.Messages) {
                 result.messages.forEach { message ->
@@ -576,7 +576,7 @@ class DriveRepository @Inject constructor(
     }
 
     fun moveFolderContentsAndDelete(fromFolderChatId: Long, toChatId: Long) {
-        // PERBAIKAN: Ganti null menjadi 0L (Long)
+        // PERBAIKAN: Gunakan 0L (Long) secara eksplisit
         telegramClient.send(TdApi.GetChatHistory(fromFolderChatId, 0L, 0L, 1000, false)) { result ->
             if (result is TdApi.Messages) {
                 val messageIds = result.messages.map { it.id }.toLongArray()
